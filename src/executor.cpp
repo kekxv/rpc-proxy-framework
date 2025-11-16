@@ -12,7 +12,7 @@ using json = nlohmann::json;
 void Executor::run(const std::string& pipe_name) {
     IpcServer server;
     LibManager lib_manager;
-    FfiDispatcher ffi_dispatcher;
+    FfiDispatcher ffi_dispatcher(struct_manager_); // Pass struct_manager_ to FfiDispatcher
 
     server.start(pipe_name, [&](const std::string& request_str) -> std::string {
         std::cout << "[Executor] Received request: " << request_str << std::endl;
@@ -32,6 +32,11 @@ void Executor::run(const std::string& pipe_name) {
             } else if (command == "unload_library") {
                 std::string library_id = request_json.at("payload").at("library_id");
                 lib_manager.unload_library(library_id);
+                response_json["status"] = "success";
+            } else if (command == "register_struct") {
+                std::string struct_name = request_json.at("payload").at("struct_name");
+                const json& definition = request_json.at("payload").at("definition");
+                struct_manager_.register_struct(struct_name, definition);
                 response_json["status"] = "success";
             } else if (command == "call_function") {
                 const auto& payload = request_json.at("payload");

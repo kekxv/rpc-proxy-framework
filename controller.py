@@ -15,21 +15,15 @@ class RpcProxyClient:
         """根据操作系统连接到命名管道或Unix套接字"""
         if platform.system() == "Windows":
             # Windows 命名管道的路径格式
-            pipe_path = f"\\\\.\\pipe\\{self.pipe_name}" # Corrected escaping for Windows path
+            pipe_path = f"\\\\.\\pipe\\{self.pipe_name}"
             # 在Windows上，我们需要使用 pywin32 库来操作命名管道
             # 为简单起见，此示例不支持Windows。可以添加 pywin32 来支持。
             raise NotImplementedError("Windows named pipes are not supported in this example.")
         else:
             # Linux/macOS Unix Domain Socket
-            # executor程序创建的socket文件通常在当前工作目录或/tmp下
-            # 此处假设在 /tmp 目录下
-            socket_path = f"/tmp/{self.pipe_name}"
+            socket_path = f"/tmp/{self.pipe_name}" # The executor explicitly creates the socket in /tmp
             if not os.path.exists(socket_path):
-                 # 如果不在/tmp下，尝试在当前项目的build目录下
-                 script_dir = os.path.dirname(os.path.realpath(__file__))
-                 socket_path = os.path.join(script_dir, "build", self.pipe_name)
-                 if not os.path.exists(socket_path):
-                     raise FileNotFoundError(f"Socket file not found in /tmp or build directory: {self.pipe_name}")
+                 raise FileNotFoundError(f"Socket file not found: {socket_path}")
 
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             print(f"Connecting to {socket_path}...")
@@ -61,6 +55,7 @@ class RpcProxyClient:
 
         # 接收完整的响应体
         response_bytes = self.sock.recv(response_len)
+            
         return json.loads(response_bytes.decode('utf-8'))
 
     def _get_next_request_id(self):
@@ -73,6 +68,21 @@ class RpcProxyClient:
             "request_id": self._get_next_request_id(),
             "payload": {
                 "path": path
+            }
+        }
+        return self._send_request(request)
+    
+    def register_struct(self, name, definition):
+        """
+        注册一个结构体类型。
+        definition: [ {"name": "member_name", "type": "member_type"}, ... ]
+        """
+        request = {
+            "command": "register_struct",
+            "request_id": self._get_next_request_id(),
+            "payload": {
+                "struct_name": name,
+                "definition": definition
             }
         }
         return self._send_request(request)
@@ -97,20 +107,32 @@ def main():
 
     pipe_name = sys.argv[1]
     
-    # 确定测试库的路径
-    # 假设此脚本在项目根目录运行
     lib_ext = {"Linux": ".so", "Darwin": ".dylib", "Windows": ".dll"}[platform.system()]
+    # 假设测试库在test_lib目录下编译到其自身的build子目录
     lib_path = os.path.abspath(f"test_lib/build/my_lib{lib_ext}")
 
     if not os.path.exists(lib_path):
         print(f"Error: Test library not found at {lib_path}")
         print("Please build the test library first by running: cd test_lib && cmake . && make")
         sys.exit(1)
-
+        
     client = RpcProxyClient(pipe_name)
 
     try:
         client.connect()
+
+        # 0. 注册 Point 结构体
+        print("\nRegistering struct 'Point'")
+        response = client.register_struct(
+            "Point",
+            [
+                {"name": "x", "type": "int32"},
+                {"name": "y", "type": "int32"}
+            ]
+        )
+        print("Response:", response)
+        if response.get("status") != "success":
+            raise RuntimeError(f"Failed to register struct Point: {response.get('error_message')}")
 
         # 1. 加载库
         print(f"\nLoading library: {lib_path}")
@@ -151,6 +173,59 @@ def main():
         print("Response:", response)
         if response.get("status") == "success":
             print(f"Result of greet('World') is: '{response['data']['value']}'")
+            
+        # 4. 调用 process_point_by_val(Point {x=10, y=20})
+        print("\nCalling function 'process_point_by_val' with args (Point {x=10, y=20})")
+        response = client.call_function(
+            library_id,
+            "process_point_by_val",
+            "int32",
+            [
+                {
+                    "type": "Point",
+                    "value": {"x": 10, "y": 20}
+                }
+            ]
+        )
+        print("Response:", response)
+        if response.get("status") == "success":
+            print(f"Result of process_point_by_val is: {response['data']['value']}")
+
+        # 5. 调用 process_point_by_ptr(Point {x=5, y=6})
+        print("\nCalling function 'process_point_by_ptr' with args (Point {x=5, y=6})")
+        response = client.call_function(
+            library_id,
+            "process_point_by_ptr",
+            "int32",
+            [
+                {
+                    "type": "pointer", # When passing struct by pointer, needs to be 'pointer' type in FFI
+                    "value": {         # The actual struct data is embedded in the pointer's value
+                        "type": "Point", # Indicate the struct type the pointer points to
+                        "value": {"x": 5, "y": 6}
+                    }
+                }
+            ]
+        )
+        print("Response:", response)
+        if response.get("status") == "success":
+            print(f"Result of process_point_by_ptr is: {response['data']['value']}")
+
+        # 6. 调用 create_point(100, 200) 并返回 Point 结构体
+        print("\nCalling function 'create_point' with args (100, 200)")
+        response = client.call_function(
+            library_id,
+            "create_point",
+            "Point",
+            [
+                {"type": "int32", "value": 100},
+                {"type": "int32", "value": 200}
+            ]
+        )
+        print("Response:", response)
+        if response.get("status") == "success":
+            print(f"Result of create_point is: {response['data']['value']}")
+
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")

@@ -93,7 +93,7 @@
 ### 请求 (Request)
 ```json
 {
-  "command": "load_library | unload_library | call_function",
+  "command": "load_library | unload_library | register_struct | call_function",
   "request_id": "unique_id_for_tracking",
   "payload": {
     // ... command-specific data
@@ -112,11 +112,27 @@
 }
 ```
 
+#### `register_struct` 示例
+```json
+{
+  "command": "register_struct",
+  "request_id": "req-002",
+  "payload": {
+    "struct_name": "Point",
+    "definition": [
+      {"name": "x", "type": "int32"},
+      {"name": "y", "type": "int32"}
+    ]
+  }
+}
+```
+> **定义说明**: `definition` 是一个数组，每个元素描述结构体的一个成员，包含 `name` (成员名) 和 `type` (成员类型)。成员类型可以是基本类型或已注册的其他结构体类型。
+
 #### `call_function` 示例
 ```json
 {
   "command": "call_function",
-  "request_id": "req-002",
+  "request_id": "req-003",
   "payload": {
     "library_id": "lib-uuid-123",
     "function_name": "add",
@@ -128,7 +144,26 @@
   }
 }
 ```
-> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`。
+> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
+>
+> **结构体参数示例**:
+> ```json
+> {
+>   "type": "Point",
+>   "value": {"x": 10, "y": 20}
+> }
+> ```
+> **结构体指针参数示例**:
+> 当需要传递结构体指针时，`type` 字段应为 `"pointer"`，而 `value` 字段则包含一个描述实际结构体数据的对象，其中 `type` 字段指定了指针指向的结构体类型。
+> ```json
+> {
+>   "type": "pointer",
+>   "value": {
+>     "type": "Point",
+>     "value": {"x": 5, "y": 6}
+>   }
+> }
+> ```
 
 ### 响应 (Response)
 ```json
@@ -153,10 +188,19 @@
 }
 ```
 
-#### `call_function` 成功响应
+#### `register_struct` 成功响应
 ```json
 {
   "request_id": "req-002",
+  "status": "success",
+  "data": {}
+}
+```
+
+#### `call_function` 成功响应
+```json
+{
+  "request_id": "req-003",
   "status": "success",
   "data": {
     "type": "int32",
@@ -164,6 +208,17 @@
   }
 }
 ```
+> **结构体返回值示例**:
+> ```json
+> {
+>   "request_id": "req-007",
+>   "status": "success",
+>   "data": {
+>     "type": "Point",
+>     "value": {"x": 100, "y": 200}
+>   }
+> }
+> ```
 
 ## 7. 跨平台实现要点
 
@@ -238,7 +293,8 @@ rpc-proxy-framework/
 │   ├── executor.h/.cpp      # Executor 核心逻辑类
 │   ├── ipc_server.h/.cpp    # IPC 服务端实现 (跨平台抽象)
 │   ├── lib_manager.h/.cpp   # 动态库管理器
-│   └── ffi_dispatcher.h/.cpp  # FFI 调用分发器
+│   ├── ffi_dispatcher.h/.cpp  # FFI 调用分发器
+│   └── struct_manager.h/.cpp  # 结构体管理器
 ├── platform/                  # (可选) 存放平台特定代码的头文件
 │   ├── common.h
 │   └── ...
@@ -250,16 +306,18 @@ rpc-proxy-framework/
 
 1.  **启动 Executor**: 在一个终端中运行 `executor --pipe /tmp/my_executor_1`。程序将阻塞，等待连接。
 2.  **Controller 连接**: 另一个进程（如Python脚本）打开并连接到 `/tmp/my_executor_1` 这个文件/管道。
-3.  **发送请求**: Controller 写入一个 `load_library` 的JSON请求字符串（前面附加4字节长度）。
-4.  **接收响应**: Executor 处理请求，加载库，并返回一个包含 `library_id` 的JSON响应。
-5.  **调用函数**: Controller 使用返回的 `library_id` 构造一个 `call_function` 请求并发送。
-6.  **获得结果**: Executor 使用`libffi`调用函数，并将结果封装在JSON中返回。
-7.  **结束**: Controller 发送 `unload_library` 请求，或直接关闭管道连接。Executor 检测到断开后，可以设计为自动清理该连接加载的所有库，然后等待下一个连接。
+3.  **注册结构体**: Controller 写入一个 `register_struct` 的JSON请求字符串。
+4.  **发送请求**: Controller 写入一个 `load_library` 的JSON请求字符串（前面附加4字节长度）。
+5.  **接收响应**: Executor 处理请求，加载库，并返回一个包含 `library_id` 的JSON响应。
+6.  **调用函数**: Controller 使用返回的 `library_id` 构造一个 `call_function` 请求并发送，其中可以包含结构体参数。
+7.  **获得结果**: Executor 使用`libffi`调用函数，并将结果（可能包含结构体）封装在JSON中返回。
+8.  **结束**: Controller 发送 `unload_library` 请求，或直接关闭管道连接。Executor 检测到断开后，可以设计为自动清理该连接加载的所有库，然后等待下一个连接。
 
 ## 11. 待办与未来改进 (TODO & Future Improvements)
 
 *   **错误处理**: 完善错误处理机制，特别是捕获被调用函数中的段错误（Segmentation Fault）等致命异常，防止 `executor` 崩溃。
 *   **安全性**: 当前模型下，`executor` 可以执行任何代码，存在巨大安全风险。应在受信任的环境中使用，或考虑使用容器/沙箱技术隔离`executor`进程。
+*   **回调函数支持**: 当前设计为同步请求/响应，回调函数需要异步、双向通信，这将是架构上的重大改变。
 *   **复杂类型支持**: 扩展协议以支持传递 C 结构体（struct）或回调函数（callback），这将显著增加复杂性。
 *   **异步处理**: 当前设计为同步请求/响应，可升级为异步模型以提高吞吐量。
 
@@ -306,7 +364,7 @@ cd test_lib
 cmake .
 make
 ```
-成功后，`my_lib.so` (或 `.dylib`, `.dll`) 文件会出现在项目的 `build` 目录下，以便 `executor` 和 `controller` 找到它。
+成功后，`my_lib.so` (或 `.dylib`, `.dll`) 文件会出现在 `test_lib/build` 目录下。
 
 ### 12.3. 运行与交互 (Running and Interacting)
 
@@ -326,7 +384,7 @@ cd /path/to/rpc-proxy-framework/build
 您将看到类似以下的输出，表示 `executor` 正在监听：
 `Executor listening on pipe: my_pipe`
 
-**注意**: 在非Windows系统上，这会在 `build` 目录下创建一个名为 `my_pipe` 的socket文件。
+**注意**: 在非Windows系统上，这会在 `/tmp/` 目录下创建一个名为 `my_pipe` 的socket文件。
 
 #### 终端 2: 运行 Controller
 
@@ -342,27 +400,46 @@ python3 controller.py my_pipe
 
 `controller.py` 脚本将自动执行以下操作：
 1.  连接到 `executor`。
-2.  请求加载 `build/my_lib.so` 动态库。
-3.  请求调用库中的 `add(10, 20)` 函数。
-4.  请求调用库中的 `greet("World")` 函数。
-5.  打印出每次操作的请求、响应和最终结果。
+2.  **注册 `Point` 结构体**。
+3.  请求加载 `test_lib/build/my_lib.so` 动态库。
+4.  请求调用库中的 `add(10, 20)` 函数。
+5.  请求调用库中的 `greet("World")` 函数。
+6.  **请求调用库中的 `process_point_by_val(Point {x=10, y=20})` 函数。**
+7.  **请求调用库中的 `process_point_by_ptr(Point {x=5, y=6})` 函数。**
+8.  **请求调用库中的 `create_point(100, 200)` 函数，并接收返回的 `Point` 结构体。**
+9.  打印出每次操作的请求、响应和最终结果。
 
 您应该能看到类似以下的输出：
 ```
-Connecting to /path/to/rpc-proxy-framework/build/my_pipe...
+Connecting to /tmp/my_pipe...
 Connected.
 
-Loading library: /path/to/rpc-proxy-framework/build/my_lib.dylib
-Response: {'data': {'library_id': 'lib-a1b2c3d4-...'}, 'request_id': 'req-1', 'status': 'success'}
+Registering struct 'Point'
+Response: {'request_id': 'req-1', 'status': 'success'}
+
+Loading library: /path/to/rpc-proxy-framework/test_lib/build/my_lib.dylib
+Response: {'data': {'library_id': 'lib-a1b2c3d4-...'}, 'request_id': 'req-2', 'status': 'success'}
 Library loaded with ID: lib-a1b2c3d4-...
 
 Calling function 'add' with args (10, 20)
-Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-2', 'status': 'success'}
+Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-3', 'status': 'success'}
 Result of add(10, 20) is: 30
 
 Calling function 'greet' with arg ('World')
-Response: {'data': {'type': 'string', 'value': 'Hello, World'}, 'request_id': 'req-3', 'status': 'success'}
+Response: {'data': {'type': 'string', 'value': 'Hello, World'}, 'request_id': 'req-4', 'status': 'success'}
 Result of greet('World') is: 'Hello, World'
+
+Calling function 'process_point_by_val' with args (Point {x=10, y=20})
+Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-5', 'status': 'success'}
+Result of process_point_by_val is: 30
+
+Calling function 'process_point_by_ptr' with args (Point {x=5, y=6})
+Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-6', 'status': 'success'}
+Result of process_point_by_ptr is: 30
+
+Calling function 'create_point' with args (100, 200)
+Response: {'data': {'type': 'Point', 'value': {'x': 100, 'y': 200}}, 'request_id': 'req-7', 'status': 'success'}
+Result of create_point is: {'x': 100, 'y': 200}
 
 Connection closed.
 ```

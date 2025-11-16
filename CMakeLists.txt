@@ -27,6 +27,7 @@ add_executable(executor
   src/ipc_server.cpp
   src/lib_manager.cpp
   src/ffi_dispatcher.cpp
+  src/struct_manager.cpp
 )
 
 # --- 包含头文件路径 ---
