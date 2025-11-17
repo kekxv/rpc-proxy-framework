@@ -1,0 +1,98 @@
+name: Build and Test RPC Proxy Framework
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libffi-dev cmake g++
+
+    - name: Cache CMake _deps/src
+      id: cache-deps
+      uses: actions/cache@v4
+      with:
+        path: _deps/src
+        key: ${{ runner.os }}-cmake-deps-${{ hashFiles('CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-cmake-deps-
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
+
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install vcpkg and libffi
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git
+        .\vcpkg\bootstrap-vcpkg.bat
+        .\vcpkg\vcpkg integrate install
+        .\vcpkg\vcpkg install libffi:x64-windows
+      shell: pwsh
+
+    - name: Cache CMake _deps/src
+      id: cache-deps
+      uses: actions/cache@v4
+      with:
+        path: _deps/src
+        key: ${{ runner.os }}-x64-cmake-deps-${{ hashFiles('CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-x64-cmake-deps-
+
+    - name: Configure CMake (x64)
+      run: cmake -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build (x64)
+      run: cmake --build build --config Release
+
+    - name: Test (x64)
+      run: ctest --test-dir build --output-on-failure
+
+  build-windows-x86:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install vcpkg and libffi
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git
+        .\vcpkg\bootstrap-vcpkg.bat
+        .\vcpkg\vcpkg integrate install
+        .\vcpkg\vcpkg install libffi:x86-windows
+      shell: pwsh
+
+    - name: Cache CMake _deps/src
+      id: cache-deps
+      uses: actions/cache@v4
+      with:
+        path: _deps/src
+        key: ${{ runner.os }}-x86-cmake-deps-${{ hashFiles('CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-x86-cmake-deps-
+
+    - name: Configure CMake (x86)
+      run: cmake -B build -A Win32 -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build (x86)
+      run: cmake --build build --config Release
+
+    - name: Test (x86)
+      run: ctest --test-dir build --output-on-failure
