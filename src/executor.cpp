@@ -46,11 +46,11 @@ void Executor::run(const std::string& pipe_name) {
                 const auto& payload = request_json.at("payload");
                 std::string library_id = payload.at("library_id");
                 std::string function_name = payload.at("function_name");
-                
+
                 std::cout << "[Executor] Calling function '" << function_name << "' in library '" << library_id << "'" << std::endl;
                 void* func_ptr = lib_manager.get_function(library_id, function_name);
                 std::cout << "[Executor] Got function pointer: " << func_ptr << std::endl;
-                
+
                 json result = ffi_dispatcher.call_function(func_ptr, payload);
                 std::cout << "[Executor] Function call finished." << std::endl;
 
@@ -64,7 +64,7 @@ void Executor::run(const std::string& pipe_name) {
             response_json["status"] = "error";
             response_json["error_message"] = e.what();
         }
-        
+
         std::cout << "[Executor] Sending response: " << response_json.dump() << std::endl;
         return response_json.dump();
     });
