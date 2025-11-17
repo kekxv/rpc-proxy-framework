@@ -40,14 +40,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install vcpkg and libffi
-      run: |
-        git clone https://github.com/microsoft/vcpkg.git
-        .\vcpkg\bootstrap-vcpkg.bat
-        .\vcpkg\vcpkg integrate install
-        .\vcpkg\vcpkg install libffi:x64-windows
-      shell: pwsh
-
     - name: Cache CMake _deps/src
       id: cache-deps
       uses: actions/cache@v4
@@ -58,7 +50,7 @@ jobs:
           ${{ runner.os }}-x64-cmake-deps-
 
     - name: Configure CMake (x64)
-      run: cmake -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
 
     - name: Build (x64)
       run: cmake --build build --config Release
@@ -71,14 +63,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install vcpkg and libffi
-      run: |
-        git clone https://github.com/microsoft/vcpkg.git
-        .\vcpkg\bootstrap-vcpkg.bat
-        .\vcpkg\vcpkg integrate install
-        .\vcpkg\vcpkg install libffi:x86-windows
-      shell: pwsh
-
     - name: Cache CMake _deps/src
       id: cache-deps
       uses: actions/cache@v4
@@ -89,7 +73,7 @@ jobs:
           ${{ runner.os }}-x86-cmake-deps-
 
     - name: Configure CMake (x86)
-      run: cmake -B build -A Win32 -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -A Win32 -DCMAKE_BUILD_TYPE=Release
 
     - name: Build (x86)
       run: cmake --build build --config Release

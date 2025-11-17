@@ -8,8 +8,32 @@ include(FetchContent)
 # include(ExternalProject) # No longer needed
 
 # --- 查找 libffi ---
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFI REQUIRED libffi)
+if(UNIX)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FFI REQUIRED libffi)
+elseif(WIN32)
+  # For Windows, assume libffi is provided in the project's libffi/ directory
+  set(LIBFFI_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libffi")
+
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8) # 64-bit build
+    set(FFI_INCLUDE_DIRS "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries")
+    set(FFI_LIBRARIES "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries/libffi-8.lib")
+  else() # 32-bit build
+    set(FFI_INCLUDE_DIRS "${LIBFFI_BASE_DIR}/x86-32bit-msvc-binaries")
+    set(FFI_LIBRARIES "${LIBFFI_BASE_DIR}/x86-32bit-msvc-binaries/libffi-8.lib")
+  endif()
+
+  # Check if files exist
+  if(NOT EXISTS "${FFI_INCLUDE_DIRS}/ffi.h")
+    message(FATAL_ERROR "libffi ffi.h not found at ${FFI_INCLUDE_DIRS}/ffi.h")
+  endif()
+  if(NOT EXISTS "${FFI_LIBRARIES}")
+    message(FATAL_ERROR "libffi library not found at ${FFI_LIBRARIES}")
+  endif()
+
+else()
+  message(FATAL_ERROR "Unsupported platform for libffi detection.")
+endif()
 
 # --- 添加 JSON 库 (nlohmann/json) ---
 FetchContent_Declare(
