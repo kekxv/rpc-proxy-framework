@@ -78,7 +78,7 @@ if (UNIX AND NOT APPLE)
     target_link_libraries(executor_core PRIVATE dl)
 endif ()
 if (WIN32)
-    target_link_libraries(executor PRIVATE Ws2_32.lib)
+    target_link_libraries(executor_core PRIVATE ws2_32.lib)
 endif ()
 
 # --- 定义可执行文件 ---
