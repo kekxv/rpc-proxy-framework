@@ -40,7 +40,13 @@ protected:
     struct_manager.register_struct("Line", line_def);
 
     // Load the test library
+#ifdef _WIN32
+    std::string lib_path = "../test_lib/my_lib.dll"; // Adjust path as necessary
+#elif defined(__linux__)
+    std::string lib_path = "../test_lib/my_lib.so"; // Adjust path as necessary
+#else
     std::string lib_path = "../test_lib/my_lib.dylib"; // Adjust path as necessary
+#endif
     test_lib_id = lib_manager.load_library(lib_path);
     ASSERT_FALSE(test_lib_id.empty());
   }
