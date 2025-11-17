@@ -202,6 +202,61 @@ def test_create_point(client, library_id):
     assert response["status"] == "success", f"Failed to call 'create_point': {response.get('error_message')}"
     assert response["data"]["value"] == {"x": 100, "y": 200}, f"Expected {{'x': 100, 'y': 200}}, got {response['data']['value']}"
 
+def test_register_line_struct(client):
+    line_struct_definition = [
+        {"name": "p1", "type": "Point"},
+        {"name": "p2", "type": "Point"}
+    ]
+    print("Registering struct 'Line'...")
+    response = client.register_struct("Line", line_struct_definition)
+    print("Register response:", response)
+    assert response["status"] == "success", f"Failed to register struct: {response.get('error_message')}"
+    return response
+
+def test_get_line_length(client, library_id):
+    print("Calling 'get_line_length' function (Line{{p1={{x=1, y=2}}, p2={{x=3, y=4}}}})...")
+    line_val = {"p1": {"x": 1, "y": 2}, "p2": {"x": 3, "y": 4}}
+    args = [
+        {"type": "Line", "value": line_val}
+    ]
+    response = client.call_function(library_id, "get_line_length", "int32", args)
+    print("Get Line Length response:", response)
+    assert response["status"] == "success", f"Failed to call 'get_line_length': {response.get('error_message')}"
+    assert response["data"]["value"] == 10, f"Expected 10, got {response['data']['value']}"
+
+def test_sum_points(client, library_id):
+    print("Calling 'sum_points' function with an array of Points...")
+    points_array = [
+        {"x": 1, "y": 1},
+        {"x": 2, "y": 2},
+        {"x": 3, "y": 3}
+    ]
+    # The C function expects a pointer to the first element and the count
+    args = [
+        {"type": "pointer", "value": points_array, "target_type": "Point[]"}, # Custom type for array of structs
+        {"type": "int32", "value": len(points_array)}
+    ]
+    response = client.call_function(library_id, "sum_points", "int32", args)
+    print("Sum Points response:", response)
+    assert response["status"] == "success", f"Failed to call 'sum_points': {response.get('error_message')}"
+    assert response["data"]["value"] == (1+1+2+2+3+3), f"Expected {1+1+2+2+3+3}, got {response['data']['value']}"
+
+def test_create_line(client, library_id):
+    print("Calling 'create_line' function (p1={{x=10, y=11}}, p2={{x=12, y=13}})...")
+    args = [
+        {"type": "int32", "value": 10},
+        {"type": "int32", "value": 11},
+        {"type": "int32", "value": 12},
+        {"type": "int32", "value": 13}
+    ]
+    response = client.call_function(library_id, "create_line", "Line", args)
+    print("Create Line response:", response)
+    assert response["status"] == "success", f"Failed to call 'create_line': {response.get('error_message')}"
+    expected_line = {"p1": {"x": 10, "y": 11}, "p2": {"x": 12, "y": 13}}
+    assert response["data"]["value"] == expected_line, f"Expected {expected_line}, got {response['data']['value']}"
+
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python controller.py <pipe_name>")
@@ -225,12 +280,16 @@ def main():
 
         # Run tests
         run_test(client, "Register Point Struct", test_register_point_struct)
+        run_test(client, "Register Line Struct", test_register_line_struct) # New test
         library_id = run_test(client, "Load Library", test_load_library, lib_path)
         run_test(client, "Add Function", test_add_function, library_id)
         run_test(client, "Greet Function", test_greet_function, library_id)
         run_test(client, "Process Point By Value", test_process_point_by_val, library_id)
         run_test(client, "Process Point By Pointer", test_process_point_by_ptr, library_id)
         run_test(client, "Create Point Function", test_create_point, library_id)
+        run_test(client, "Get Line Length Function", test_get_line_length, library_id) # New test
+        run_test(client, "Sum Points Function", test_sum_points, library_id) # New test
+        run_test(client, "Create Line Function", test_create_line, library_id) # New test
 
     except Exception as e:
         print(f"\nAn error occurred during tests: {e}")
@@ -240,6 +299,10 @@ def main():
             response = client.unload_library(library_id)
             print("Unload response:", response)
         
+        print("Unregistering struct 'Line'") # New unregister
+        response = client.unregister_struct("Line")
+        print("Unregister response:", response)
+
         print("Unregistering struct 'Point'")
         response = client.unregister_struct("Point")
         print("Unregister response:", response)
