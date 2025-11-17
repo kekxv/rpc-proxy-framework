@@ -90,11 +90,147 @@ TEST_F(ExecutorTest, GreetFunction)
   ASSERT_EQ(result["value"], "Hello, World");
 }
 
-// Add more tests here for structs, pointers, arrays, etc.
-// For example:
-// TEST_F(ExecutorTest, ProcessPointByVal) { ... }
-// TEST_F(ExecutorTest, ProcessPointByPtr) { ... }
-// TEST_F(ExecutorTest, CreatePoint) { ... }
-// TEST_F(ExecutorTest, GetLineLength) { ... }
-// TEST_F(ExecutorTest, SumPoints) { ... }
-// TEST_F(ExecutorTest, CreateLine) { ... }
+TEST_F(ExecutorTest, ProcessPointByVal)
+{
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "process_point_by_val"},
+    {"return_type", "int32"},
+    {
+      "args", {
+        {{"type", "Point"}, {"value", {{"x", 10}, {"y", 20}}}}
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_val"), payload);
+  ASSERT_EQ(result["type"], "int32");
+  ASSERT_EQ(result["value"], 30);
+}
+
+TEST_F(ExecutorTest, ProcessPointByPtr)
+{
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "process_point_by_ptr"},
+    {"return_type", "int32"},
+    {
+      "args", {
+        {
+          {"type", "pointer"},
+          {"target_type", "Point"},
+          {"value", {{"x", 5}, {"y", 6}}}
+        }
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_ptr"), payload);
+  ASSERT_EQ(result["type"], "int32");
+  ASSERT_EQ(result["value"], 11);
+}
+
+TEST_F(ExecutorTest, CreatePoint)
+{
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "create_point"},
+    {"return_type", "Point"},
+    {
+      "args", {
+        {{"type", "int32"}, {"value", 100}},
+        {{"type", "int32"}, {"value", 200}}
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_point"), payload);
+  ASSERT_EQ(result["type"], "Point");
+  ASSERT_EQ(result["value"]["x"], 100);
+  ASSERT_EQ(result["value"]["y"], 200);
+}
+
+TEST_F(ExecutorTest, GetLineLength)
+{
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "get_line_length"},
+    {"return_type", "int32"},
+    {
+      "args", {
+        {
+          {"type", "Line"}, {
+            "value", {
+              {"p1", {{"x", 1}, {"y", 2}}},
+              {"p2", {{"x", 3}, {"y", 4}}}
+            }
+          }
+        }
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "get_line_length"), payload);
+  ASSERT_EQ(result["type"], "int32");
+  ASSERT_EQ(result["value"], 10); // 1+2+3+4 = 10
+}
+
+TEST_F(ExecutorTest, SumPoints)
+{
+  typedef struct
+  {
+    int32_t x;
+    int32_t y;
+  } Point;
+  // Prepare an array of Point structs in memory
+  // This part is tricky as FfiDispatcher expects a pointer to already allocated memory for arrays.
+  // For testing purposes, we can simulate this by creating a temporary array.
+  // In a real scenario, the controller would manage this memory and pass the pointer.
+  // For this test, we'll create a small array of Points and pass its address.
+  Point points_array[] = {{1, 1}, {2, 2}, {3, 3}};
+  int count = sizeof(points_array) / sizeof(Point);
+
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "sum_points"},
+    {"return_type", "int32"},
+    {
+      "args", {
+        {
+          {"type", "pointer"},
+          {"target_type", "Point[]"},
+          {
+            "value", {
+              {{"x", 1}, {"y", 1}},
+              {{"x", 2}, {"y", 2}},
+              {{"x", 3}, {"y", 3}}
+            }
+          }
+        },
+        {{"type", "int32"}, {"value", count}}
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "sum_points"), payload);
+  ASSERT_EQ(result["type"], "int32");
+  ASSERT_EQ(result["value"], 12); // (1+1) + (2+2) + (3+3) = 2 + 4 + 6 = 12
+}
+
+TEST_F(ExecutorTest, CreateLine)
+{
+  json payload = {
+    {"library_id", test_lib_id},
+    {"function_name", "create_line"},
+    {"return_type", "Line"},
+    {
+      "args", {
+        {{"type", "int32"}, {"value", 10}},
+        {{"type", "int32"}, {"value", 20}},
+        {{"type", "int32"}, {"value", 30}},
+        {{"type", "int32"}, {"value", 40}}
+      }
+    }
+  };
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_line"), payload);
+  ASSERT_EQ(result["type"], "Line");
+  ASSERT_EQ(result["value"]["p1"]["x"], 10);
+  ASSERT_EQ(result["value"]["p1"]["y"], 20);
+  ASSERT_EQ(result["value"]["p2"]["x"], 30);
+  ASSERT_EQ(result["value"]["p2"]["y"], 40);
+}

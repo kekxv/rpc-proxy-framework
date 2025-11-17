@@ -31,8 +31,8 @@ DLLEXPORT int process_point_by_val(Point p) {
     return p.x + p.y;
 }
 
-DLLEXPORT int process_point_by_ptr(uint64_t p_ptr_val) {
-    const Point* p = (const Point*)p_ptr_val;
+DLLEXPORT int process_point_by_ptr(Point* p) {
+    // const Point* p = (const Point*)p_ptr_val;
     if (p == NULL) {
         return -1; // Error
     }

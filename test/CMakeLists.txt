@@ -20,3 +20,6 @@ target_include_directories(executor_test PRIVATE
 
 # 添加测试
 add_test(NAME executor_unit_tests COMMAND executor_test)
+
+add_dependencies(executor_test my_lib)
+
