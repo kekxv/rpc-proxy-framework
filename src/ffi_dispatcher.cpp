@@ -170,7 +170,7 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
         char* struct_mem = static_cast<char*>(arg_storage.allocate_struct(
           layout->total_size, std::max(layout->alignment, sizeof(void*))));
         populate_memory_from_json(struct_mem, arg_json.at("value"), target_type_name, arg_storage);
-        return arg_storage.allocate(reinterpret_cast<uintptr_t>(struct_mem)); // Return pointer to the pointer value
+        return arg_storage.allocate(struct_mem); // Return pointer to the pointer value
       }
       else if (target_type_name.back() == ']')
       {
@@ -199,7 +199,7 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
             char* element_ptr = array_mem + (i * element_layout->total_size);
             populate_memory_from_json(element_ptr, array_json.at(i), element_type_name, arg_storage);
           }
-          return arg_storage.allocate(reinterpret_cast<uintptr_t>(array_mem)); // Return pointer to the array's address
+          return arg_storage.allocate(array_mem); // Return pointer to the array's address
         }
       }
       // Fallthrough for other pointer types if not handled

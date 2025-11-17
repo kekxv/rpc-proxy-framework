@@ -48,8 +48,10 @@ DLLEXPORT int get_line_length(Line line) {
     return line.p1.x + line.p1.y + line.p2.x + line.p2.y;
 }
 
-DLLEXPORT int sum_points(uint64_t points_ptr_val, int count) {
-    const Point* points = (const Point*)points_ptr_val;
+DLLEXPORT int sum_points(const Point* points, int count) {
+    if (points == NULL) {
+        return -1;
+    }
     int total_sum = 0;
     for (int i = 0; i < count; ++i) {
         total_sum += points[i].x + points[i].y;

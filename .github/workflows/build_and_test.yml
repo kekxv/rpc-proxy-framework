@@ -38,7 +38,7 @@ jobs:
 #      run: cmake --build build --config Release
 #
 #    - name: Test (x64)
-#      run: ctest --test-dir build --output-on-failure
+#      run: ctest --test-dir build --output-on-failure -C Release
 
   build-windows-x86:
     runs-on: windows-latest
@@ -52,6 +52,4 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Test (x86)
-      run: |
-        ./build/test/Release/executor_test.exe
-        ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure -C Release
