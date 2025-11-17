@@ -19,10 +19,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# --- 添加 Google Test ---
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG v1.17.0 # 使用一个稳定的版本
+)
+FetchContent_MakeAvailable(googletest)
 
-# --- 定义可执行文件 ---
-add_executable(executor
-  src/main.cpp
+enable_testing()
+
+# --- 定义核心库 ---
+add_library(executor_core STATIC
   src/executor.cpp
   src/ipc_server.cpp
   src/lib_manager.cpp
@@ -30,22 +38,36 @@ add_executable(executor
   src/struct_manager.cpp
 )
 
-# --- 包含头文件路径 ---
-target_include_directories(executor PUBLIC
+target_include_directories(executor_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${FFI_INCLUDE_DIRS}
   ${json_SOURCE_DIR}/include
 )
 
-# --- 链接库 ---
-target_link_libraries(executor PRIVATE
+target_link_libraries(executor_core PRIVATE
   ${FFI_LIBRARIES}
 )
 
 # --- 平台特定的链接 ---
 if(UNIX AND NOT APPLE)
   # Linux 需要链接 dl
-  target_link_libraries(executor PRIVATE dl)
+  target_link_libraries(executor_core PRIVATE dl)
 endif()
 
+# --- 定义可执行文件 ---
+add_executable(executor
+  src/main.cpp
+)
+
+# --- 包含头文件路径 ---
+target_include_directories(executor PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# --- 链接库 ---
+target_link_libraries(executor PRIVATE
+  executor_core
+)
+
 add_subdirectory(test_lib)
+add_subdirectory(test)
