@@ -41,7 +41,11 @@ protected:
 
     // Load the test library
 #ifdef _WIN32
+#ifdef CMAKE_BUILD_TYPE
+    std::string lib_path = "../../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll"; // Adjust path as necessary
+#else
     std::string lib_path = "../test_lib/my_lib.dll"; // Adjust path as necessary
+#endif
 #elif defined(__linux__)
     std::string lib_path = "../test_lib/my_lib.so"; // Adjust path as necessary
 #else

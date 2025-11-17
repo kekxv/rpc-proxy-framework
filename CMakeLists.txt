@@ -18,9 +18,11 @@ elseif (WIN32)
     if (CMAKE_SIZEOF_VOID_P EQUAL 8) # 64-bit build
         set(FFI_INCLUDE_DIRS "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries")
         set(FFI_LIBRARIES "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries/libffi-8.lib")
+        set(FFI_BINARIES "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries/libffi-8.dll")
     else () # 32-bit build
         set(FFI_INCLUDE_DIRS "${LIBFFI_BASE_DIR}/x86-32bit-msvc-binaries")
         set(FFI_LIBRARIES "${LIBFFI_BASE_DIR}/x86-32bit-msvc-binaries/libffi-8.lib")
+        set(FFI_BINARIES "${LIBFFI_BASE_DIR}/x86-32bit-msvc-binaries/libffi-8.dll")
     endif ()
 
     # Check if files exist
@@ -79,6 +81,15 @@ if (UNIX AND NOT APPLE)
 endif ()
 if (WIN32)
     target_link_libraries(executor_core PRIVATE ws2_32.lib)
+    # 添加一个 post-build 事件
+    add_custom_command(
+            TARGET executor_core
+            POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FFI_BINARIES}"
+            "${CMAKE_BINARY_DIR}/"
+            COMMENT "Copying executable to bin directory..."
+    )
 endif ()
 
 # --- 定义可执行文件 ---
