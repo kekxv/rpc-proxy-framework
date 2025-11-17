@@ -7,24 +7,24 @@ on:
     branches: [ main ]
 
 jobs:
-#  build-linux:
-#    runs-on: ubuntu-latest
-#    steps:
-#    - uses: actions/checkout@v4
-#
-#    - name: Install dependencies
-#      run: |
-#        sudo apt-get update
-#        sudo apt-get install -y libffi-dev cmake g++
-#
-#    - name: Configure CMake
-#      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-#
-#    - name: Build
-#      run: cmake --build build --config Release
-#
-#    - name: Test
-#      run: ctest --test-dir build --output-on-failure
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libffi-dev cmake g++
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
 #
 #  build-windows-x64:
 #    runs-on: windows-latest
