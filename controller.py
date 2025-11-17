@@ -268,6 +268,8 @@ def main():
     lib_path = os.path.abspath(f"build/test_lib/my_lib{lib_ext}")
 
     if not os.path.exists(lib_path):
+      lib_path = os.path.abspath(f"cmake-build-debug/test_lib/my_lib{lib_ext}")
+    if not os.path.exists(lib_path):
         print(f"Error: Test library not found at {lib_path}")
         print("Please build the test library first by running: cd test_lib && cmake . && make")
         sys.exit(1)
