@@ -160,6 +160,14 @@ void StructManager::register_struct(const std::string& name, const json& definit
     registered_structs.emplace(name, std::move(layout));
 }
 
+void StructManager::unregister_struct(const std::string& name) {
+    auto it = registered_structs.find(name);
+    if (it == registered_structs.end()) {
+        throw std::runtime_error("Struct '" + name + "' not found for unregistration.");
+    }
+    registered_structs.erase(it);
+}
+
 const StructLayout* StructManager::get_layout(const std::string& name) const {
     auto it = registered_structs.find(name);
     if (it == registered_structs.end()) {

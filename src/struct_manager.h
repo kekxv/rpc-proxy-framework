@@ -37,6 +37,9 @@ public:
     // 根据JSON定义注册一个新的结构体
     void register_struct(const std::string& name, const json& definition);
 
+    // 取消注册一个结构体
+    void unregister_struct(const std::string& name);
+
     // 获取已注册结构体的布局信息
     const StructLayout* get_layout(const std::string& name) const;
 

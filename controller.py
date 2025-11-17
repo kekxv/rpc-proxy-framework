@@ -72,6 +72,16 @@ class RpcProxyClient:
         }
         return self._send_request(request)
     
+    def unload_library(self, library_id):
+        request = {
+            "command": "unload_library",
+            "request_id": self._get_next_request_id(),
+            "payload": {
+                "library_id": library_id
+            }
+        }
+        return self._send_request(request)
+    
     def register_struct(self, name, definition):
         """
         注册一个结构体类型。
@@ -83,6 +93,16 @@ class RpcProxyClient:
             "payload": {
                 "struct_name": name,
                 "definition": definition
+            }
+        }
+        return self._send_request(request)
+
+    def unregister_struct(self, name):
+        request = {
+            "command": "unregister_struct",
+            "request_id": self._get_next_request_id(),
+            "payload": {
+                "struct_name": name
             }
         }
         return self._send_request(request)
@@ -100,6 +120,88 @@ class RpcProxyClient:
         }
         return self._send_request(request)
 
+def run_test(client, test_name, test_func, *args):
+    print(f"\n--- Running Test: {test_name} ---")
+    try:
+        result = test_func(client, *args)
+        print(f"--- Test '{test_name}' PASSED ---")
+        return result
+    except Exception as e:
+        print(f"--- Test '{test_name}' FAILED: {e} ---")
+        raise # Re-raise the exception to stop further tests if one fails
+
+def test_register_point_struct(client):
+    point_struct_definition = [
+        {"name": "x", "type": "int32"},
+        {"name": "y", "type": "int32"}
+    ]
+    print("Registering struct 'Point'...")
+    response = client.register_struct("Point", point_struct_definition)
+    print("Register response:", response)
+    assert response["status"] == "success", f"Failed to register struct: {response.get('error_message')}"
+    return response
+
+def test_load_library(client, lib_path):
+    print(f"Loading library from {lib_path}...")
+    response = client.load_library(lib_path)
+    print("Load response:", response)
+    assert response["status"] == "success", f"Failed to load library: {response.get('error_message')}"
+    return response["data"]["library_id"]
+
+def test_add_function(client, library_id):
+    print("Calling 'add' function (10 + 20)...")
+    args = [
+        {"type": "int32", "value": 10},
+        {"type": "int32", "value": 20}
+    ]
+    response = client.call_function(library_id, "add", "int32", args)
+    print("Add function response:", response)
+    assert response["status"] == "success", f"Failed to call 'add': {response.get('error_message')}"
+    assert response["data"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
+
+def test_greet_function(client, library_id):
+    print("Calling 'greet' function ('World')...")
+    args = [
+        {"type": "string", "value": "World"}
+    ]
+    response = client.call_function(library_id, "greet", "string", args)
+    print("Greet function response:", response)
+    assert response["status"] == "success", f"Failed to call 'greet': {response.get('error_message')}"
+    assert response["data"]["value"] == "Hello, World", f"Expected 'Hello, World', got {response['data']['value']}"
+
+def test_process_point_by_val(client, library_id):
+    print("Calling 'process_point_by_val' function (Point{x=5, y=10})...")
+    point_val = {"x": 5, "y": 10}
+    args = [
+        {"type": "Point", "value": point_val}
+    ]
+    response = client.call_function(library_id, "process_point_by_val", "int32", args)
+    print("Process Point By Value response:", response)
+    assert response["status"] == "success", f"Failed to call 'process_point_by_val': {response.get('error_message')}"
+    assert response["data"]["value"] == 15, f"Expected 15, got {response['data']['value']}"
+
+def test_process_point_by_ptr(client, library_id):
+    print("Calling 'process_point_by_ptr' function (Point{x=10, y=20})...")
+    point_val = {"x": 10, "y": 20}
+    args = [
+        {"type": "pointer", "value": point_val, "target_type": "Point"}
+    ]
+    response = client.call_function(library_id, "process_point_by_ptr", "int32", args)
+    print("Process Point By Pointer response:", response)
+    assert response["status"] == "success", f"Failed to call 'process_point_by_ptr': {response.get('error_message')}"
+    assert response["data"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
+
+def test_create_point(client, library_id):
+    print("Calling 'create_point' function (x=100, y=200)...")
+    args = [
+        {"type": "int32", "value": 100},
+        {"type": "int32", "value": 200}
+    ]
+    response = client.call_function(library_id, "create_point", "Point", args)
+    print("Create Point response:", response)
+    assert response["status"] == "success", f"Failed to call 'create_point': {response.get('error_message')}"
+    assert response["data"]["value"] == {"x": 100, "y": 200}, f"Expected {{'x': 100, 'y': 200}}, got {response['data']['value']}"
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python controller.py <pipe_name>")
@@ -108,8 +210,7 @@ def main():
     pipe_name = sys.argv[1]
     
     lib_ext = {"Linux": ".so", "Darwin": ".dylib", "Windows": ".dll"}[platform.system()]
-    # 假设测试库在test_lib目录下编译到其自身的build子目录
-    lib_path = os.path.abspath(f"test_lib/build/my_lib{lib_ext}")
+    lib_path = os.path.abspath(f"build/test_lib/my_lib{lib_ext}")
 
     if not os.path.exists(lib_path):
         print(f"Error: Test library not found at {lib_path}")
@@ -117,119 +218,32 @@ def main():
         sys.exit(1)
         
     client = RpcProxyClient(pipe_name)
-
+    library_id = None
+    
     try:
         client.connect()
 
-        # 0. 注册 Point 结构体
-        print("\nRegistering struct 'Point'")
-        response = client.register_struct(
-            "Point",
-            [
-                {"name": "x", "type": "int32"},
-                {"name": "y", "type": "int32"}
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") != "success":
-            raise RuntimeError(f"Failed to register struct Point: {response.get('error_message')}")
-
-        # 1. 加载库
-        print(f"\nLoading library: {lib_path}")
-        response = client.load_library(lib_path)
-        print("Response:", response)
-        
-        if response.get("status") != "success":
-            raise RuntimeError(f"Failed to load library: {response.get('error_message')}")
-        
-        library_id = response["data"]["library_id"]
-        print(f"Library loaded with ID: {library_id}")
-
-        # 2. 调用 add(10, 20)
-        print("\nCalling function 'add' with args (10, 20)")
-        response = client.call_function(
-            library_id,
-            "add",
-            "int32",
-            [
-                {"type": "int32", "value": 10},
-                {"type": "int32", "value": 20}
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") == "success":
-            print(f"Result of add(10, 20) is: {response['data']['value']}")
-
-        # 3. 调用 greet("World")
-        print("\nCalling function 'greet' with arg ('World')")
-        response = client.call_function(
-            library_id,
-            "greet",
-            "string",
-            [
-                {"type": "string", "value": "World"}
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") == "success":
-            print(f"Result of greet('World') is: '{response['data']['value']}'")
-            
-        # 4. 调用 process_point_by_val(Point {x=10, y=20})
-        print("\nCalling function 'process_point_by_val' with args (Point {x=10, y=20})")
-        response = client.call_function(
-            library_id,
-            "process_point_by_val",
-            "int32",
-            [
-                {
-                    "type": "Point",
-                    "value": {"x": 10, "y": 20}
-                }
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") == "success":
-            print(f"Result of process_point_by_val is: {response['data']['value']}")
-
-        # 5. 调用 process_point_by_ptr(Point {x=5, y=6})
-        print("\nCalling function 'process_point_by_ptr' with args (Point {x=5, y=6})")
-        response = client.call_function(
-            library_id,
-            "process_point_by_ptr",
-            "int32",
-            [
-                {
-                    "type": "pointer", # When passing struct by pointer, needs to be 'pointer' type in FFI
-                    "value": {         # The actual struct data is embedded in the pointer's value
-                        "type": "Point", # Indicate the struct type the pointer points to
-                        "value": {"x": 5, "y": 6}
-                    }
-                }
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") == "success":
-            print(f"Result of process_point_by_ptr is: {response['data']['value']}")
-
-        # 6. 调用 create_point(100, 200) 并返回 Point 结构体
-        print("\nCalling function 'create_point' with args (100, 200)")
-        response = client.call_function(
-            library_id,
-            "create_point",
-            "Point",
-            [
-                {"type": "int32", "value": 100},
-                {"type": "int32", "value": 200}
-            ]
-        )
-        print("Response:", response)
-        if response.get("status") == "success":
-            print(f"Result of create_point is: {response['data']['value']}")
-
+        # Run tests
+        run_test(client, "Register Point Struct", test_register_point_struct)
+        library_id = run_test(client, "Load Library", test_load_library, lib_path)
+        run_test(client, "Add Function", test_add_function, library_id)
+        run_test(client, "Greet Function", test_greet_function, library_id)
+        run_test(client, "Process Point By Value", test_process_point_by_val, library_id)
+        run_test(client, "Process Point By Pointer", test_process_point_by_ptr, library_id)
+        run_test(client, "Create Point Function", test_create_point, library_id)
 
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn error occurred during tests: {e}")
     finally:
+        if library_id:
+            print(f"\nUnloading library: {library_id}")
+            response = client.unload_library(library_id)
+            print("Unload response:", response)
+        
+        print("Unregistering struct 'Point'")
+        response = client.unregister_struct("Point")
+        print("Unregister response:", response)
+        
         client.close()
 
 if __name__ == "__main__":

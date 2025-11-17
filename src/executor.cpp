@@ -38,6 +38,10 @@ void Executor::run(const std::string& pipe_name) {
                 const json& definition = request_json.at("payload").at("definition");
                 struct_manager_.register_struct(struct_name, definition);
                 response_json["status"] = "success";
+            } else if (command == "unregister_struct") {
+                std::string struct_name = request_json.at("payload").at("struct_name");
+                struct_manager_.unregister_struct(struct_name);
+                response_json["status"] = "success";
             } else if (command == "call_function") {
                 const auto& payload = request_json.at("payload");
                 std::string library_id = payload.at("library_id");

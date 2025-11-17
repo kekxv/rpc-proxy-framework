@@ -47,3 +47,5 @@ if(UNIX AND NOT APPLE)
   # Linux 需要链接 dl
   target_link_libraries(executor PRIVATE dl)
 endif()
+
+add_subdirectory(test_lib)
