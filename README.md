@@ -87,7 +87,7 @@
 所有通信都基于简单的JSON请求/响应模式。
 
 ### 请求 (Request)
-```json
+```json5
 {
   "command": "load_library | unload_library | register_struct | call_function",
   "request_id": "unique_id_for_tracking",
@@ -162,7 +162,7 @@
 > ```
 
 ### 响应 (Response)
-```json
+```json5
 {
   "request_id": "same_as_request",
   "status": "success | error",
