@@ -1,0 +1,66 @@
+name: Test RPC Proxy Framework Examples
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-examples-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libffi-dev cmake g++ python3 python3-pip openjdk-17-jdk maven
+
+    - name: Build Executor
+      run: |
+        cmake -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --config Release
+
+    - name: Build Test Lib
+      run: |
+        cmake -B test_lib/build test_lib
+        cmake --build test_lib/build
+
+    - name: Run Python Example
+      run: |
+        build/executor --pipe my_pipe & 
+        EXECUTOR_PID=$!
+        sleep 2
+        python3 examples/python_controller/controller.py my_pipe
+        kill $EXECUTOR_PID
+        rm /tmp/my_pipe # Clean up Unix domain socket
+
+    - name: Build Java Example
+      run: |
+        cd examples/java_controller
+        mvn clean install
+        cd ../..
+
+    - name: Run Java Example
+      run: |
+        build/executor --pipe my_pipe & 
+        EXECUTOR_PID=$!
+        sleep 2
+        java -jar examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
+        kill $EXECUTOR_PID
+        rm /tmp/my_pipe # Clean up Unix domain socket
+
+    - name: Build C++ Example
+      run: |
+        cmake -B examples/cpp_controller/build -DCMAKE_BUILD_TYPE=Release examples/cpp_controller
+        cmake --build examples/cpp_controller/build
+
+    - name: Run C++ Example
+      run: |
+        build/executor --pipe my_pipe & 
+        EXECUTOR_PID=$!
+        sleep 2
+        examples/cpp_controller/build/cpp_controller_example my_pipe
+        kill $EXECUTOR_PID
+        rm /tmp/my_pipe # Clean up Unix domain socket

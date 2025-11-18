@@ -46,3 +46,9 @@ cmake-build-debug/
 
 **/.DS_Store
 database/*
+/examples/java_controller/target/classes/com/example/App.class
+/examples/java_controller/target/maven-archiver/pom.properties
+/examples/java_controller/target/maven-status/maven-compiler-plugin/compile/default-compile/createdFiles.lst
+/examples/java_controller/target/maven-status/maven-compiler-plugin/compile/default-compile/inputFiles.lst
+/examples/java_controller/target/java-controller-1.0-SNAPSHOT.jar
+/examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar
