@@ -16,6 +16,7 @@ elseif (WIN32)
     set(LIBFFI_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libffi")
 
     if (CMAKE_SIZEOF_VOID_P EQUAL 8) # 64-bit build
+        add_definitions(-DX86_WIN64)
         set(FFI_INCLUDE_DIRS "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries")
         set(FFI_LIBRARIES "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries/libffi-8.lib")
         set(FFI_BINARIES "${LIBFFI_BASE_DIR}/x86-64bit-msvc-binaries/libffi-8.dll")
