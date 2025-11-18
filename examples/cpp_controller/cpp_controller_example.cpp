@@ -139,7 +139,7 @@ int main(int argc, char* argv[]) {
         json load_library_request = {
             {"command", "load_library"},
             {"request_id", "req-2"},
-            {"payload", {"path", library_full_path}}
+            {"payload", {{"path", library_full_path}}} // Corrected payload construction
         };
         std::cout << "Loading library: " << library_full_path << std::endl;
         json load_library_response = send_request(
@@ -150,6 +150,9 @@ int main(int argc, char* argv[]) {
 #endif
             load_library_request);
         std::cout << "Response: " << load_library_response.dump() << std::endl;
+        if (load_library_response["status"] == "error") {
+            throw std::runtime_error("Failed to load library: " + load_library_response["error_message"].get<std::string>());
+        }
         std::string library_id = load_library_response["data"]["library_id"].get<std::string>();
         std::cout << "Library loaded with ID: " << library_id << std::endl;
 
@@ -176,6 +179,9 @@ int main(int argc, char* argv[]) {
 #endif
             add_request);
         std::cout << "Response: " << add_response.dump() << std::endl;
+        if (add_response["status"] == "error") {
+            throw std::runtime_error("Failed to call 'add': " + add_response["error_message"].get<std::string>());
+        }
         std::cout << "Result of add(10, 20) is: " << add_response["data"]["value"].get<int>() << std::endl;
 
         // 4. Call function 'greet'
@@ -200,6 +206,9 @@ int main(int argc, char* argv[]) {
 #endif
             greet_request);
         std::cout << "Response: " << greet_response.dump() << std::endl;
+        if (greet_response["status"] == "error") {
+            throw std::runtime_error("Failed to call 'greet': " + greet_response["error_message"].get<std::string>());
+        }
         std::cout << "Result of greet('C++ World') is: '" << greet_response["data"]["value"].get<std::string>() << "'" << std::endl;
 
         // 5. Call function 'process_point_by_val'
@@ -224,6 +233,9 @@ int main(int argc, char* argv[]) {
 #endif
             process_point_by_val_request);
         std::cout << "Response: " << process_point_by_val_response.dump() << std::endl;
+        if (process_point_by_val_response["status"] == "error") {
+            throw std::runtime_error("Failed to call 'process_point_by_val': " + process_point_by_val_response["error_message"].get<std::string>());
+        }
         std::cout << "Result of process_point_by_val is: " << process_point_by_val_response["data"]["value"].get<int>() << std::endl;
 
         // 6. Call function 'process_point_by_ptr'
@@ -235,7 +247,7 @@ int main(int argc, char* argv[]) {
                 {"function_name", "process_point_by_ptr"},
                 {"return_type", "int32"},
                 {"args", {
-                    {{"type", "pointer"}, {"value", {{"type", "Point"}, {"value", {{"x", 5}, {"y", 6}}}}}}
+                    {{"type", "pointer"}, {"value", {{"x", 5}, {"y", 6}}}, {"target_type", "Point"}} // Corrected for pointer
                 }}
             }}
         };
@@ -248,6 +260,9 @@ int main(int argc, char* argv[]) {
 #endif
             process_point_by_ptr_request);
         std::cout << "Response: " << process_point_by_ptr_response.dump() << std::endl;
+        if (process_point_by_ptr_response["status"] == "error") {
+            throw std::runtime_error("Failed to call 'process_point_by_ptr': " + process_point_by_ptr_response["error_message"].get<std::string>());
+        }
         std::cout << "Result of process_point_by_ptr is: " << process_point_by_ptr_response["data"]["value"].get<int>() << std::endl;
 
         // 7. Call function 'create_point'
@@ -273,6 +288,9 @@ int main(int argc, char* argv[]) {
 #endif
             create_point_request);
         std::cout << "Response: " << create_point_response.dump() << std::endl;
+        if (create_point_response["status"] == "error") {
+            throw std::runtime_error("Failed to call 'create_point': " + create_point_response["error_message"].get<std::string>());
+        }
         std::cout << "Result of create_point is: " << create_point_response["data"]["value"].dump() << std::endl;
 
     } catch (const std::exception& e) {
