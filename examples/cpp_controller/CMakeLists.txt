@@ -3,14 +3,23 @@ project(cpp_controller_example CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(FetchContent)
 
-# 查找 nlohmann/json (假设已通过 FetchContent 或其他方式引入到主项目中)
-# 如果没有，您可能需要手动下载或使用 FetchContent
-find_package(nlohmann_json CONFIG REQUIRED)
+# --- 添加 JSON 库 (nlohmann/json) ---
+FetchContent_Declare(
+        json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
 
 add_executable(cpp_controller_example cpp_controller_example.cpp)
 
-target_link_libraries(cpp_controller_example PRIVATE nlohmann_json::nlohmann_json)
+
+target_include_directories(cpp_controller_example PUBLIC
+        ${json_SOURCE_DIR}/include
+)
 
 # 平台特定的链接
 if(UNIX AND NOT APPLE)
