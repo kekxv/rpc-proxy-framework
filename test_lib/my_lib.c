@@ -64,3 +64,14 @@ DLLEXPORT Line create_line(int32_t p1x, int32_t p1y, int32_t p2x, int32_t p2y) {
     return l;
 }
 
+// New function to demonstrate callbacks
+// The callback function is expected to have the signature: void (*callback_fn)(const char* message, int value)
+DLLEXPORT void call_my_callback(void (*callback_fn)(const char* message, int value), const char* msg) {
+    if (callback_fn) {
+        printf("Native code calling back with message: %s, value: %d\n", msg, 123);
+        callback_fn(msg, 123);
+    } else {
+        printf("Callback function is NULL.\n");
+    }
+}
+

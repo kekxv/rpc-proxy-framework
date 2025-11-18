@@ -3,6 +3,7 @@
 
 #include <string>
 #include <functional>
+#include <nlohmann/json.hpp> // Include nlohmann/json for json type
 
 class IpcServer {
 public:
@@ -12,6 +13,7 @@ public:
     ~IpcServer();
 
     void start(const std::string& pipe_name, RequestHandler handler);
+    void sendEvent(const nlohmann::json& event_json); // New method to send asynchronous events
 
 public: // Changed from private to public
     class Impl;

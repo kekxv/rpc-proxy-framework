@@ -46,6 +46,9 @@ public:
     // 判断一个类型名是否是已注册的结构体
     bool is_struct(const std::string& type_name) const;
 
+    // 将内存中的结构体序列化为JSON对象
+    nlohmann::json serializeStruct(const std::string& struct_name, const void* struct_ptr) const;
+
 private:
     // 将字符串类型名映射到FFI类型和尺寸/对齐信息
     ffi_type* get_ffi_type_from_string(const std::string& type_name);

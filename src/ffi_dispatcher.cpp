@@ -35,9 +35,12 @@ static const std::map<std::string, ffi_type*>& get_basic_type_map()
 }
 
 // FfiDispatcher implementation
-FfiDispatcher::FfiDispatcher(const StructManager& struct_manager)
-  : struct_manager_(struct_manager)
+FfiDispatcher::FfiDispatcher(const StructManager& struct_manager, CallbackManager* callback_manager)
+  : struct_manager_(struct_manager), callback_manager_(callback_manager)
 {
+    if (!callback_manager_) {
+        throw std::runtime_error("FfiDispatcher requires a valid CallbackManager instance.");
+    }
 }
 
 ffi_type* FfiDispatcher::get_ffi_type_for_name(const std::string& type_name) const
@@ -53,6 +56,10 @@ ffi_type* FfiDispatcher::get_ffi_type_for_name(const std::string& type_name) con
   if (layout)
   {
     return layout->ffi_type_struct.get();
+  }
+  // Check for callback type
+  if (type_name == "callback") {
+      return &ffi_type_pointer; // Callbacks are passed as function pointers
   }
   throw std::runtime_error("Unsupported type: " + type_name);
 }
@@ -226,6 +233,11 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
   if (type_str == "uint64") return arg_storage.allocate(arg_json.at("value").get<uint64_t>());
   if (type_str == "float") return arg_storage.allocate(arg_json.at("value").get<float>());
   if (type_str == "double") return arg_storage.allocate(arg_json.at("value").get<double>());
+  if (type_str == "callback") {
+      std::string callback_id = arg_json.at("value").get<std::string>();
+      void* trampoline_ptr = callback_manager_->getTrampolineFunctionPtr(callback_id);
+      return arg_storage.allocate(trampoline_ptr);
+  }
   throw std::runtime_error("Unhandled argument type for allocation: " + type_str);
 }
 

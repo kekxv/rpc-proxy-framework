@@ -4,6 +4,9 @@ import socket
 import struct
 import sys
 import platform
+import threading
+import queue
+import time
 
 # --- 新增：用于彩色输出的类 ---
 class Colors:
@@ -34,6 +37,11 @@ class RpcProxyClient:
     self.pipe_name = pipe_name
     self.sock = None
     self.request_id_counter = 0
+    self.response_queue = queue.Queue()
+    self.event_queue = queue.Queue()
+    self.receiver_thread = None
+    self.running = False
+    self.pending_requests = {} # To store futures for responses
 
   def connect(self):
     """根据操作系统连接到命名管道或Unix套接字"""
@@ -49,38 +57,111 @@ class RpcProxyClient:
       print(f"{Colors.BRIGHT_BLUE}Connecting to {socket_path}...{Colors.RESET}")
       self.sock.connect(socket_path)
       print(f"{Colors.BRIGHT_GREEN}Connected.{Colors.RESET}")
+      
+      self.running = True
+      self.receiver_thread = threading.Thread(target=self._receive_messages, daemon=True)
+      self.receiver_thread.start()
 
   def close(self):
+    self.running = False
     if self.sock:
+      self.sock.shutdown(socket.SHUT_RDWR) # Signal to close both ends
       self.sock.close()
       self.sock = None
-      print(f"{Colors.YELLOW}Connection closed.{Colors.RESET}")
+    if self.receiver_thread and self.receiver_thread.is_alive():
+      self.receiver_thread.join(timeout=1) # Wait for receiver thread to finish
+    print(f"{Colors.BRIGHT_CYAN}Connection closed.{Colors.RESET}")
+
+  def _receive_messages(self):
+    """在单独的线程中持续接收消息"""
+    while self.running:
+      try:
+        # Read message length
+        len_bytes = self.sock.recv(4)
+        if not len_bytes:
+          print(f"{Colors.RED}Executor disconnected.{Colors.RESET}")
+          self.running = False
+          break
+        
+        message_len = struct.unpack('>I', len_bytes)[0]
+        
+        # Read message data
+        message_bytes = b''
+        while len(message_bytes) < message_len:
+          packet = self.sock.recv(message_len - len(message_bytes))
+          if not packet:
+            print(f"{Colors.RED}Executor disconnected during message read.{Colors.RESET}")
+            self.running = False
+            break
+          message_bytes += packet
+        
+        if not self.running: # Check if shutdown was initiated during read
+            break
+
+        message_data = json.loads(message_bytes.decode('utf-8'))
+
+        if "request_id" in message_data:
+          # This is a response to a request
+          req_id = message_data["request_id"]
+          if req_id in self.pending_requests:
+            self.pending_requests[req_id].set_result(message_data)
+            del self.pending_requests[req_id]
+          else:
+            print(f"{Colors.YELLOW}Received unexpected response for ID {req_id}:{Colors.RESET}")
+            print(json.dumps(message_data, indent=None))
+        elif "event" in message_data:
+          # This is an asynchronous event
+          self.event_queue.put(message_data)
+          print(f"{Colors.MAGENTA}<-- Received Event [{message_data['event']}]:{Colors.RESET}")
+          print(json.dumps(message_data, indent=None))
+        else:
+          print(f"{Colors.YELLOW}Received unknown message type:{Colors.RESET}")
+          print(json.dumps(message_data, indent=None))
+
+      except socket.timeout:
+        pass # No data, continue loop
+      except (socket.error, json.JSONDecodeError) as e:
+        if self.running:
+          print(f"{Colors.RED}Error in receiver thread: {e}{Colors.RESET}")
+        self.running = False
+        break
+    print(f"{Colors.BRIGHT_CYAN}Receiver thread stopped.{Colors.RESET}")
+
 
   def _send_request(self, request_json):
-    """发送请求并接收响应，并打印彩色日志"""
-    if not self.sock:
-      raise ConnectionError("Not connected to the executor.")
+    """发送请求并等待响应"""
+    if not self.sock or not self.running:
+      raise ConnectionError("Not connected to the executor or connection closed.")
+
+    req_id = request_json["request_id"]
+    future_response = EventWithResult() # Use the custom event class that can hold a result
+    self.pending_requests[req_id] = future_response
 
     # --- 打印发送的请求 ---
-    print(f"{Colors.BRIGHT_CYAN}--> Sending Request [{request_json['command']}] id={request_json['request_id']}:{Colors.RESET}")
-    print(json.dumps(request_json, indent=2))
+    print(f"{Colors.BRIGHT_CYAN}--> Sending Request [{request_json['command']}] id={req_id}:{Colors.RESET}")
+    print(json.dumps(request_json, indent=None))
 
     message = json.dumps(request_json).encode('utf-8')
-    self.sock.sendall(struct.pack('>I', len(message)))
-    self.sock.sendall(message)
+    try:
+      self.sock.sendall(struct.pack('>I', len(message)))
+      self.sock.sendall(message)
+    except socket.error as e:
+      del self.pending_requests[req_id]
+      raise ConnectionError(f"Failed to send request: {e}")
 
-    response_len_bytes = self.sock.recv(4)
-    if not response_len_bytes:
-      raise ConnectionError("Connection closed while waiting for response.")
-    response_len = struct.unpack('>I', response_len_bytes)[0]
-
-    response_bytes = self.sock.recv(response_len)
-    response_data = json.loads(response_bytes.decode('utf-8'))
+    # Wait for the response
+    future_response.wait(timeout=10) # Wait for response, with a timeout
+    if not future_response.is_set():
+        if req_id in self.pending_requests:
+            del self.pending_requests[req_id]
+        raise TimeoutError(f"Timeout waiting for response for request ID {req_id}")
+    
+    response_data = future_response.result() # Get the result set by the receiver thread
 
     # --- 打印接收到的响应 ---
     response_color = Colors.BRIGHT_GREEN if response_data.get("status") == "success" else Colors.BRIGHT_RED
-    print(f"{response_color}<-- Received Response for id={request_json['request_id']}:{Colors.RESET}")
-    print(json.dumps(response_data, indent=2))
+    print(f"{response_color}<-- Received Response for id={req_id}:{Colors.RESET}")
+    print(json.dumps(response_data, indent=None))
 
     return response_data
 
@@ -129,6 +210,27 @@ class RpcProxyClient:
     }
     return self._send_request(request)
 
+  def register_callback(self, return_type, args_type):
+    request = {
+      "command": "register_callback",
+      "request_id": self._get_next_request_id(),
+      "payload": {
+        "return_type": return_type,
+        "args_type": args_type
+      }
+    }
+    return self._send_request(request)
+
+  def unregister_callback(self, callback_id):
+    request = {
+      "command": "unregister_callback",
+      "request_id": self._get_next_request_id(),
+      "payload": {
+        "callback_id": callback_id
+      }
+    }
+    return self._send_request(request)
+
   def call_function(self, library_id, function_name, return_type, args):
     request = {
       "command": "call_function",
@@ -142,8 +244,21 @@ class RpcProxyClient:
     }
     return self._send_request(request)
 
+# --- Custom Event class for threading.Event with result ---
+class EventWithResult(threading.Event):
+    def __init__(self):
+        super().__init__()
+        self._result = None
+
+    def set_result(self, result):
+        self._result = result
+        self.set()
+
+    def result(self):
+        return self._result
+
 def run_test(client, test_name, test_func, *args):
-  print(f"\n{Colors.BOLD}{Colors.BRIGHT_YELLOW}--- Running Test: {test_name} ---{Colors.RESET}")
+  print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}--- Running Test: {test_name} ---{Colors.RESET}")
   try:
     result = test_func(client, *args)
     print(f"{Colors.BOLD}{Colors.BRIGHT_GREEN}--- Test '{test_name}' PASSED ---{Colors.RESET}")
@@ -265,6 +380,43 @@ def test_create_line(client, library_id):
   expected_line = {"p1": {"x": 10, "y": 11}, "p2": {"x": 12, "y": 13}}
   assert response["data"]["value"] == expected_line, f"Expected {expected_line}, got {response['data']['value']}"
 
+def test_callback_functionality(client, library_id):
+  print(f"{Colors.BLUE}Registering callback signature (void, [string, int32])...{Colors.RESET}")
+  response = client.register_callback("void", ["string", "int32"])
+  assert response["status"] == "success", f"Failed to register callback: {response.get('error_message')}"
+  callback_id = response["data"]["callback_id"]
+  print(f"{Colors.GREEN}Callback registered with ID: {callback_id}{Colors.RESET}")
+
+  print(f"{Colors.BLUE}Calling 'call_my_callback' function with registered callback...{Colors.RESET}")
+  args = [
+    {"type": "callback", "value": callback_id},
+    {"type": "string", "value": "Hello from Python!"}
+  ]
+  response = client.call_function(library_id, "call_my_callback", "void", args)
+  assert response["status"] == "success", f"Failed to call 'call_my_callback': {response.get('error_message')}"
+  print(f"{Colors.GREEN}call_my_callback returned successfully.{Colors.RESET}")
+
+  print(f"{Colors.BLUE}Waiting for invoke_callback event...{Colors.RESET}")
+  try:
+    event = client.event_queue.get(timeout=5) # Wait for the event
+    assert event["event"] == "invoke_callback", f"Expected invoke_callback event, got {event['event']}"
+    assert event["payload"]["callback_id"] == callback_id, f"Expected callback_id {callback_id}, got {event['payload']['callback_id']}"
+    
+    event_args = event["payload"]["args"]
+    assert len(event_args) == 2, f"Expected 2 args, got {len(event_args)}"
+    assert event_args[0]["type"] == "string" and event_args[0]["value"] == "Hello from Python!", f"Unexpected first arg: {event_args[0]}"
+    assert event_args[1]["type"] == "int32" and event_args[1]["value"] == 123, f"Unexpected second arg: {event_args[1]}"
+    
+    print(f"{Colors.GREEN}Successfully received and verified invoke_callback event!{Colors.RESET}")
+  except queue.Empty:
+    raise TimeoutError("Did not receive invoke_callback event within timeout.")
+  
+  print(f"{Colors.BLUE}Unregistering callback: {callback_id}{Colors.RESET}")
+  response = client.unregister_callback(callback_id)
+  assert response["status"] == "success", f"Failed to unregister callback: {response.get('error_message')}"
+  print(f"{Colors.GREEN}Callback unregistered successfully.{Colors.RESET}")
+
+
 def main():
   if len(sys.argv) != 2:
     print(f"{Colors.BRIGHT_RED}Usage: python {sys.argv[0]} <pipe_name>{Colors.RESET}")
@@ -275,8 +427,12 @@ def main():
   lib_ext = {"Linux": ".so", "Darwin": ".dylib", "Windows": ".dll"}[platform.system()]
   lib_path = os.path.abspath(f"build/test_lib/my_lib{lib_ext}")
 
+  # Fallback for common build directories
   if not os.path.exists(lib_path):
     lib_path = os.path.abspath(f"cmake-build-debug/test_lib/my_lib{lib_ext}")
+  if not os.path.exists(lib_path):
+    lib_path = os.path.abspath(f"test_lib/build/my_lib{lib_ext}") # For direct test_lib build
+  
   if not os.path.exists(lib_path):
     print(f"{Colors.BRIGHT_RED}Error: Test library not found at {lib_path}{Colors.RESET}")
     print(f"{Colors.YELLOW}Please build the test library first.{Colors.RESET}")
@@ -284,8 +440,10 @@ def main():
 
   client = RpcProxyClient(pipe_name)
   library_id = None
+  callback_id = None # To ensure cleanup
 
   try:
+    time.sleep(1) # Add a small delay to allow the executor to start
     client.connect()
 
     # Run tests
@@ -300,18 +458,19 @@ def main():
     run_test(client, "Get Line Length Function", test_get_line_length, library_id)
     run_test(client, "Sum Points Function", test_sum_points, library_id)
     run_test(client, "Create Line Function", test_create_line, library_id)
+    run_test(client, "Callback Functionality", test_callback_functionality, library_id)
 
   except Exception as e:
     print(f"\n{Colors.BOLD}{Colors.BRIGHT_RED}An error occurred during tests: {e}{Colors.RESET}")
   finally:
     if library_id:
-      print(f"\n{Colors.YELLOW}Unloading library: {library_id}{Colors.RESET}")
+      print(f"\n{Colors.BRIGHT_CYAN}Unloading library: {library_id}{Colors.RESET}")
       client.unload_library(library_id)
 
-    print(f"{Colors.YELLOW}Unregistering struct 'Line'{Colors.RESET}")
+    print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Line'{Colors.RESET}")
     client.unregister_struct("Line")
 
-    print(f"{Colors.YELLOW}Unregistering struct 'Point'{Colors.RESET}")
+    print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Point'{Colors.RESET}")
     client.unregister_struct("Point")
 
     client.close()

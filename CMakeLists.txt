@@ -68,6 +68,7 @@ add_library(executor_core STATIC
         src/lib_manager.cpp
         src/ffi_dispatcher.cpp
         src/struct_manager.cpp
+        src/callback_manager.cpp
 )
 
 target_include_directories(executor_core PUBLIC
@@ -82,11 +83,16 @@ target_link_libraries(executor_core PRIVATE
 
 # --- 平台特定的链接 ---
 if (UNIX AND NOT APPLE)
-    # Linux 需要链接 dl
+    # Linux 需要链接 dl 和 uuid
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(UUID REQUIRED uuid)
+    target_link_libraries(executor_core PRIVATE dl ${UUID_LIBRARIES})
+elseif (APPLE)
+    # macOS 需要链接 dl
     target_link_libraries(executor_core PRIVATE dl)
 endif ()
 if (WIN32)
-    target_link_libraries(executor_core PRIVATE ws2_32.lib)
+    target_link_libraries(executor_core PRIVATE ws2_32.lib Rpcrt4.lib)
     # 添加一个 post-build 事件
     add_custom_command(
             TARGET executor_core

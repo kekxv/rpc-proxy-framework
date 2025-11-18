@@ -93,7 +93,7 @@
 ### 请求 (Request)
 ```json
 {
-  "command": "load_library | unload_library | register_struct | call_function",
+  "command": "load_library | unload_library | register_struct | register_callback | unregister_callback | call_function",
   "request_id": "unique_id_for_tracking",
   "payload": {
     // ... command-specific data
@@ -111,6 +111,19 @@
   }
 }
 ```
+
+#### `register_callback` 示例
+```json
+{
+  "command": "register_callback",
+  "request_id": "req-002",
+  "payload": {
+    "return_type": "void",
+    "args_type": ["string", "int32"]
+  }
+}
+```
+> **定义说明**: `register_callback` 用于向 `executor` 注册一个回调签名。`executor` 会为此签名生成一个唯一的 `callback_id` 并返回给 `controller`。`return_type` 是回调函数的返回类型，`args_type` 是回调函数接受的参数类型列表。
 
 #### `register_struct` 示例
 ```json
@@ -144,7 +157,7 @@
   }
 }
 ```
-> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
+> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`, `callback`。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
 >
 > **结构体参数示例**:
 > ```json
@@ -162,6 +175,14 @@
 >     "type": "Point",
 >     "value": {"x": 5, "y": 6}
 >   }
+> }
+> ```
+> **回调参数示例**:
+> 当需要传递回调函数时，`type` 字段应为 `"callback"`，`value` 字段是先前通过 `register_callback` 获取的 `callback_id`。
+> ```json
+> {
+>   "type": "callback",
+>   "value": "cb-uuid-456"
 > }
 > ```
 
@@ -184,6 +205,17 @@
   "status": "success",
   "data": {
     "library_id": "lib-uuid-123"
+  }
+}
+```
+
+#### `register_callback` 成功响应
+```json
+{
+  "request_id": "req-002",
+  "status": "success",
+  "data": {
+    "callback_id": "cb-uuid-456"
   }
 }
 ```
@@ -219,6 +251,37 @@
 >   }
 > }
 > ```
+
+## 6.1. 异步事件 (Asynchronous Events)
+
+为了支持回调函数，通信模型扩展为双向的。`executor` 可以在任何时候主动向 `controller` 发送事件。这些事件没有 `request_id`，因为它们不是对某个请求的响应。
+
+### 事件 (Event)
+```json
+{
+  "event": "invoke_callback",
+  "payload": {
+    // ... event-specific data
+  }
+}
+```
+
+#### `invoke_callback` 事件示例
+当一个注册过的回调函数被动态库中的代码调用时，`executor` 会向 `controller` 发送此事件。
+
+```json
+{
+  "event": "invoke_callback",
+  "payload": {
+    "callback_id": "cb-uuid-456",
+    "args": [
+      { "type": "string", "value": "Message from native code" },
+      { "type": "int32", "value": 123 }
+    ]
+  }
+}
+```
+> **事件说明**: `callback_id` 标识了哪个已注册的回调被触发。`args` 数组包含了调用时传递给回调函数的实际参数值。`controller` 接收到此事件后，可以根据 `callback_id` 执行其本地对应的逻辑。
 
 ## 7. 跨平台实现要点
 
@@ -294,7 +357,8 @@ rpc-proxy-framework/
 │   ├── ipc_server.h/.cpp    # IPC 服务端实现 (跨平台抽象)
 │   ├── lib_manager.h/.cpp   # 动态库管理器
 │   ├── ffi_dispatcher.h/.cpp  # FFI 调用分发器
-│   └── struct_manager.h/.cpp  # 结构体管理器
+│   ├── struct_manager.h/.cpp  # 结构体管理器
+│   └── callback_manager.h/.cpp # 回调管理器
 ├── platform/                  # (可选) 存放平台特定代码的头文件
 │   ├── common.h
 │   └── ...
@@ -317,8 +381,7 @@ rpc-proxy-framework/
 
 *   **错误处理**: 完善错误处理机制，特别是捕获被调用函数中的段错误（Segmentation Fault）等致命异常，防止 `executor` 崩溃。
 *   **安全性**: 当前模型下，`executor` 可以执行任何代码，存在巨大安全风险。应在受信任的环境中使用，或考虑使用容器/沙箱技术隔离`executor`进程。
-*   **回调函数支持**: 当前设计为同步请求/响应，回调函数需要异步、双向通信，这将是架构上的重大改变。
-*   **复杂类型支持**: 扩展协议以支持传递 C 结构体（struct）或回调函数（callback），这将显著增加复杂性。
+*   **回调函数支持**: 已实现。当前设计已升级为支持异步、双向通信的回调机制。
 *   **异步处理**: 当前设计为同步请求/响应，可升级为异步模型以提高吞吐量。
 
 ## 12. 使用说明 (Usage Instructions)

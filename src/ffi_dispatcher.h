@@ -1,8 +1,9 @@
 #ifndef RPC_PROXY_FRAMEWORK_FFI_DISPATCHER_H
 #define RPC_PROXY_FRAMEWORK_FFI_DISPATCHER_H
 
-#include "nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 #include "struct_manager.h"
+#include "callback_manager.h" // Include CallbackManager
 #include <ffi.h>
 #include <string>
 #include <vector>
@@ -12,6 +13,9 @@
 #include <cstring> // For memcpy
 
 using json = nlohmann::json;
+
+// Forward declaration
+class CallbackManager;
 
 // RAII wrapper for argument memory.
 // This class ensures that all memory allocated for FFI arguments is
@@ -86,12 +90,13 @@ private:
 
 class FfiDispatcher {
 public:
-    FfiDispatcher(const StructManager& struct_manager);
+    FfiDispatcher(const StructManager& struct_manager, CallbackManager* callback_manager);
 
     json call_function(void* func_ptr, const json& payload);
 
 private:
     const StructManager& struct_manager_;
+    CallbackManager* callback_manager_; // Not owned
 
     ffi_type* get_ffi_type_for_name(const std::string& type_name) const;
     void populate_memory_from_json(char* dest_ptr, const json& value_json, const std::string& type_name, FfiArgs& arg_storage);
