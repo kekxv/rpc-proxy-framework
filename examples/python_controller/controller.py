@@ -79,7 +79,7 @@ class RpcProxyClient:
         # Read message length
         len_bytes = self.sock.recv(4)
         if not len_bytes:
-          print(f"{Colors.RED}Executor disconnected.{Colors.RESET}")
+          print(f"{Colors.YELLOW}Executor disconnected.{Colors.RESET}")
           self.running = False
           break
         
