@@ -10,10 +10,12 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <namedpipeapi.h>
+#include <winsock2.h> // For htonl/ntohl on Windows
 #else
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <arpa/inet.h> // For htonl/ntohl on Unix-like systems
 #endif
 
 namespace fs = std::filesystem;
@@ -29,36 +31,27 @@ json send_request(
     const json& request) {
     std::string request_str = request.dump();
     uint32_t length = request_str.length();
-
-    // Send length prefix (little-endian)
-    char len_bytes[4];
-    len_bytes[0] = (length >> 0) & 0xFF;
-    len_bytes[1] = (length >> 8) & 0xFF;
-    len_bytes[2] = (length >> 16) & 0xFF;
-    len_bytes[3] = (length >> 24) & 0xFF;
+    uint32_t network_order_length = htonl(length); // Convert to network byte order (big-endian)
 
 #ifdef _WIN32
     DWORD bytes_written;
-    WriteFile(pipe, len_bytes, 4, &bytes_written, NULL);
+    WriteFile(pipe, &network_order_length, 4, &bytes_written, NULL);
     WriteFile(pipe, request_str.c_str(), length, &bytes_written, NULL);
     FlushFileBuffers(pipe);
 #else
-    write(sock, len_bytes, 4);
+    write(sock, &network_order_length, 4);
     write(sock, request_str.c_str(), length);
 #endif
 
     // Read length prefix of response
-    char response_len_bytes[4];
+    uint32_t network_order_response_length;
 #ifdef _WIN32
     DWORD bytes_read;
-    ReadFile(pipe, response_len_bytes, 4, &bytes_read, NULL);
+    ReadFile(pipe, &network_order_response_length, 4, &bytes_read, NULL);
 #else
-    read(sock, response_len_bytes, 4);
+    read(sock, &network_order_response_length, 4);
 #endif
-    uint32_t response_length = (uint8_t)response_len_bytes[0] |
-                               ((uint8_t)response_len_bytes[1] << 8) |
-                               ((uint8_t)response_len_bytes[2] << 16) |
-                               ((uint8_t)response_len_bytes[3] << 24);
+    uint32_t response_length = ntohl(network_order_response_length); // Convert from network byte order
 
     // Read response
     std::vector<char> response_buffer(response_length);
@@ -109,13 +102,13 @@ int main(int argc, char* argv[]) {
 
     fs::path current_path = fs::current_path();
     // Adjust lib_path to be relative to the cpp_controller directory
-    fs::path lib_path = current_path / ".." / ".." / "test_lib" / "build";
+    fs::path lib_path = current_path  / "build" / "test_lib" ;
 #ifdef _WIN32
     lib_path /= "my_lib.dll";
 #elif __APPLE__
-    lib_path /= "libmy_lib.dylib";
+    lib_path /= "my_lib.dylib";
 #else
-    lib_path /= "libmy_lib.so";
+    lib_path /= "my_lib.so";
 #endif
     std::string library_full_path = lib_path.string();
 
