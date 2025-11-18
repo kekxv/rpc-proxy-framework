@@ -130,7 +130,7 @@ public class App {
             processPointByPtrPayload.put("return_type", "int32");
             JSONArray processPointByPtrArgs = new JSONArray();
             JSONObject pointPtrVal = new JSONObject().put("x", 5).put("y", 6);
-            JSONObject pointPtrArg = new JSONObject().put("type", "pointer").put("value", new JSONObject().put("type", "Point").put("value", pointPtrVal));
+            JSONObject pointPtrArg = new JSONObject().put("type", "pointer").put("value", pointPtrVal).put("target_type", "Point");
             processPointByPtrArgs.put(pointPtrArg);
             processPointByPtrPayload.put("args", processPointByPtrArgs);
             processPointByPtrRequest.put("payload", processPointByPtrPayload);
