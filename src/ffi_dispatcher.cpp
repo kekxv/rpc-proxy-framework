@@ -263,7 +263,7 @@ json FfiDispatcher::call_function(void* func_ptr, const json& payload)
   void* rvalue;
   if (rtype->size > 0)
   {
-#ifdef _WIN64
+#ifdef X86_WIN64
     // windows 目前会出现越界问题，暂时增加16字节进行屏蔽，等待libffi协助
     rvalue = new char[rtype->size + (4 * 4)];
 #else
