@@ -107,19 +107,19 @@ jobs:
         $outputDir = "."
         New-Item -ItemType Directory -Force -Path $outputDir
         Copy-Item -Path "$buildDir\Release\executor.exe" -Destination $outputDir
-        # Assuming libffi.dll is in the build directory or a known path
+        # Assuming libffi-8.dll is in the build directory or a known path
         # If not found, this step will fail and needs adjustment
-        Copy-Item -Path "$buildDir\Release\libffi.dll" -Destination $outputDir -ErrorAction SilentlyContinue
-        # If libffi.dll is not in Release, try other common locations
-        if (-not (Test-Path "$outputDir\libffi.dll")) {
-            Copy-Item -Path "libffi\x86-64bit-msvc-binaries\libffi.dll" -Destination $outputDir -ErrorAction SilentlyContinue
+        Copy-Item -Path "$buildDir\Release\libffi-8.dll" -Destination $outputDir -ErrorAction SilentlyContinue
+        # If libffi-8.dll is not in Release, try other common locations
+        if (-not (Test-Path "$outputDir\libffi-8.dll")) {
+            Copy-Item -Path "libffi\x86-64bit-msvc-binaries\libffi-8.dll" -Destination $outputDir -ErrorAction SilentlyContinue
         }
     - uses: actions/upload-artifact@v4
       with:
         name: win64-executor
         path: |
           executor.exe
-          libffi.dll
+          libffi-8.dll
 
   build-windows-x86:
     runs-on: windows-latest
@@ -143,16 +143,16 @@ jobs:
         $outputDir = "."
         New-Item -ItemType Directory -Force -Path $outputDir
         Copy-Item -Path "$buildDir\Release\executor.exe" -Destination $outputDir
-        # Assuming libffi.dll is in the build directory or a known path
+        # Assuming libffi-8.dll is in the build directory or a known path
         # If not found, this step will fail and needs adjustment
-        Copy-Item -Path "$buildDir\Release\libffi.dll" -Destination $outputDir -ErrorAction SilentlyContinue
-        # If libffi.dll is not in Release, try other common locations
-        if (-not (Test-Path "$outputDir\libffi.dll")) {
-            Copy-Item -Path "libffi\x86-32bit-msvc-binaries\libffi.dll" -Destination $outputDir -ErrorAction SilentlyContinue
+        Copy-Item -Path "$buildDir\Release\libffi-8.dll" -Destination $outputDir -ErrorAction SilentlyContinue
+        # If libffi-8.dll is not in Release, try other common locations
+        if (-not (Test-Path "$outputDir\libffi-8.dll")) {
+            Copy-Item -Path "libffi\x86-32bit-msvc-binaries\libffi-8.dll" -Destination $outputDir -ErrorAction SilentlyContinue
         }
     - uses: actions/upload-artifact@v4
       with:
         name: win32-executor
         path: |
           executor.exe
-          libffi.dll
+          libffi-8.dll
