@@ -25,20 +25,20 @@ jobs:
 
     - name: Test
       run: ctest --test-dir build --output-on-failure
-#
-#  build-windows-x64:
-#    runs-on: windows-latest
-#    steps:
-#    - uses: actions/checkout@v4
-#
-#    - name: Configure CMake (x64)
-#      run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
-#
-#    - name: Build (x64)
-#      run: cmake --build build --config Release
-#
-#    - name: Test (x64)
-#      run: ctest --test-dir build --output-on-failure -C Release
+
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake (x64)
+      run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build (x64)
+      run: cmake --build build --config Release
+
+    - name: Test (x64)
+      run: ctest --test-dir build --output-on-failure -C Release
 
   build-windows-x86:
     runs-on: windows-latest
