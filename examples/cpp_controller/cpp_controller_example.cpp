@@ -20,6 +20,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <queue>
 #endif
 
 namespace fs = std::filesystem;
