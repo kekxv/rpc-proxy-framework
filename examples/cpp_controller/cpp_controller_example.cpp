@@ -1,67 +1,205 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <chrono>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <map>
+#include <future>
+#include <atomic>
 #include <filesystem>
 
-#include "nlohmann/json.hpp" // Make sure nlohmann/json is available
+#include "nlohmann/json.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
 #include <namedpipeapi.h>
-#include <winsock2.h> // For htonl/ntohl on Windows
+#include <winsock2.h>
 #else
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <arpa/inet.h> // For htonl/ntohl on Unix-like systems
+#include <arpa/inet.h>
 #endif
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-// Helper function to send JSON request with length prefix
-json send_request(
+class RpcClient {
+public:
 #ifdef _WIN32
-    HANDLE pipe,
+    using SocketType = HANDLE;
+    const SocketType INVALID_SOCKET = INVALID_HANDLE_VALUE;
 #else
-    int sock,
-#endif
-    const json& request) {
-    std::string request_str = request.dump();
-    uint32_t length = request_str.length();
-    uint32_t network_order_length = htonl(length); // Convert to network byte order (big-endian)
-
-#ifdef _WIN32
-    DWORD bytes_written;
-    WriteFile(pipe, &network_order_length, 4, &bytes_written, NULL);
-    WriteFile(pipe, request_str.c_str(), length, &bytes_written, NULL);
-    FlushFileBuffers(pipe);
-#else
-    write(sock, &network_order_length, 4);
-    write(sock, request_str.c_str(), length);
+    using SocketType = int;
+    const SocketType INVALID_SOCKET = -1;
 #endif
 
-    // Read length prefix of response
-    uint32_t network_order_response_length;
-#ifdef _WIN32
-    DWORD bytes_read;
-    ReadFile(pipe, &network_order_response_length, 4, &bytes_read, NULL);
-#else
-    read(sock, &network_order_response_length, 4);
-#endif
-    uint32_t response_length = ntohl(network_order_response_length); // Convert from network byte order
+    RpcClient(const std::string& pipe_name) : pipe_name_(pipe_name), sock_(INVALID_SOCKET), request_id_counter_(0), running_(false) {}
 
-    // Read response
-    std::vector<char> response_buffer(response_length);
+    ~RpcClient() {
+        disconnect();
+    }
+
+    void connect() {
 #ifdef _WIN32
-    ReadFile(pipe, response_buffer.data(), response_length, &bytes_read, NULL);
+        std::string pipe_path = "\\\\.\\pipe\\" + pipe_name_;
+        sock_ = CreateFileA(pipe_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (sock_ == INVALID_SOCKET) {
+            throw std::runtime_error("Failed to connect to named pipe: " + std::to_string(GetLastError()));
+        }
 #else
-    read(sock, response_buffer.data(), response_length);
+        std::string socket_path = "/tmp/" + pipe_name_;
+        sock_ = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock_ == INVALID_SOCKET) {
+            throw std::runtime_error("Failed to create socket");
+        }
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+
+        if (::connect(sock_, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+            close(sock_);
+            sock_ = INVALID_SOCKET;
+            throw std::runtime_error("Failed to connect to Unix domain socket: " + socket_path);
+        }
 #endif
-    std::string response_str(response_buffer.begin(), response_buffer.end());
-    return json::parse(response_str);
+        running_ = true;
+        receiver_thread_ = std::thread(&RpcClient::receive_messages, this);
+        std::cout << "Connected to " << pipe_name_ << std::endl;
+    }
+
+    void disconnect() {
+        running_ = false;
+        if (sock_ != INVALID_SOCKET) {
+#ifdef _WIN32
+            CloseHandle(sock_);
+#else
+            shutdown(sock_, SHUT_RDWR);
+            close(sock_);
+#endif
+            sock_ = INVALID_SOCKET;
+        }
+        if (receiver_thread_.joinable()) {
+            receiver_thread_.join();
+        }
+        std::cout << "Connection closed." << std::endl;
+    }
+
+    json send_request(const json& request_payload) {
+        std::string req_id = "req-" + std::to_string(++request_id_counter_);
+        json request = request_payload;
+        request["request_id"] = req_id;
+
+        auto promise = std::make_shared<std::promise<json>>();
+        std::future<json> future = promise->get_future();
+        {
+            std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+            pending_requests_[req_id] = promise;
+        }
+
+        std::string request_str = request.dump();
+        uint32_t length = request_str.length();
+        uint32_t network_order_length = htonl(length);
+
+        std::lock_guard<std::mutex> send_lock(send_mutex_);
+#ifdef _WIN32
+        DWORD bytes_written;
+        WriteFile(sock_, &network_order_length, 4, &bytes_written, NULL);
+        WriteFile(sock_, request_str.c_str(), length, &bytes_written, NULL);
+#else
+        write(sock_, &network_order_length, 4);
+        write(sock_, request_str.c_str(), length);
+#endif
+        
+        std::cout << "--> Sending Request [" << request["command"] << "] id=" << req_id << std::endl;
+
+        // Wait for the response
+        if (future.wait_for(std::chrono::seconds(10)) == std::future_status::timeout) {
+            throw std::runtime_error("Timeout waiting for response for request ID " + req_id);
+        }
+        
+        json response = future.get();
+        std::cout << "<-- Received Response for id=" << req_id << ": " << response.dump() << std::endl;
+        return response;
+    }
+
+private:
+    void receive_messages() {
+        while (running_) {
+            uint32_t network_order_response_length;
+#ifdef _WIN32
+            DWORD bytes_read;
+            if (!ReadFile(sock_, &network_order_response_length, 4, &bytes_read, NULL) || bytes_read == 0) {
+                if (running_) std::cerr << "Executor disconnected." << std::endl;
+                break;
+            }
+#else
+            ssize_t read_bytes = read(sock_, &network_order_response_length, 4);
+            if (read_bytes <= 0) {
+                if (running_) std::cerr << "Executor disconnected." << std::endl;
+                break;
+            }
+#endif
+            uint32_t response_length = ntohl(network_order_response_length);
+            std::vector<char> response_buffer(response_length);
+#ifdef _WIN32
+            if (!ReadFile(sock_, response_buffer.data(), response_length, &bytes_read, NULL) || bytes_read == 0) {
+                if (running_) std::cerr << "Executor disconnected during read." << std::endl;
+                break;
+            }
+#else
+            read_bytes = read(sock_, response_buffer.data(), response_length);
+            if (read_bytes <= 0) {
+                if (running_) std::cerr << "Executor disconnected during read." << std::endl;
+                break;
+            }
+#endif
+            std::string response_str(response_buffer.begin(), response_buffer.end());
+            json response = json::parse(response_str);
+
+            if (response.contains("request_id")) {
+                std::string req_id = response["request_id"];
+                std::shared_ptr<std::promise<json>> promise;
+                {
+                    std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+                    auto it = pending_requests_.find(req_id);
+                    if (it != pending_requests_.end()) {
+                        promise = it->second;
+                        pending_requests_.erase(it);
+                    }
+                }
+                if (promise) {
+                    promise->set_value(response);
+                }
+            } else if (response.contains("event")) {
+                std::cout << "<-- Received Event [" << response["event"] << "]: " << response.dump() << std::endl;
+            }
+        }
+    }
+
+    std::string pipe_name_;
+    SocketType sock_;
+    std::atomic<int> request_id_counter_;
+    std::thread receiver_thread_;
+    std::atomic<bool> running_;
+    std::mutex send_mutex_;
+
+    std::map<std::string, std::shared_ptr<std::promise<json>>> pending_requests_;
+    std::mutex pending_requests_mutex_;
+};
+
+void run_test(const std::string& name, const std::function<void()>& test_func) {
+    std::cout << "\n--- Running Test: " << name << " ---" << std::endl;
+    try {
+        test_func();
+        std::cout << "--- Test '" << name << "' PASSED ---" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "--- Test '" << name << "' FAILED: " << e.what() << " ---" << std::endl;
+        throw;
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -69,240 +207,85 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " <pipe_name>" << std::endl;
         return 1;
     }
-    std::string pipe_name = argv[1];
-
-#ifdef _WIN32
-    std::string pipe_path = "\\\\.\\pipe\\" + pipe_name;
-    HANDLE pipe = CreateFileA(pipe_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (pipe == INVALID_HANDLE_VALUE) {
-        std::cerr << "Failed to connect to named pipe: " << GetLastError() << std::endl;
-        return 1;
-    }
-    std::cout << "Connected to named pipe: " << pipe_path << std::endl;
-#else
-    std::string socket_path = "/tmp/" + pipe_name;
-    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock == -1) {
-        std::cerr << "Failed to create socket" << std::endl;
-        return 1;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
-
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        std::cerr << "Failed to connect to Unix domain socket: " << socket_path << std::endl;
-        close(sock);
-        return 1;
-    }
-    std::cout << "Connected to Unix domain socket: " << socket_path << std::endl;
-#endif
-
-    fs::path current_path = fs::current_path();
-    // Adjust lib_path to be relative to the cpp_controller directory
-    fs::path lib_path = current_path  / "build" / "test_lib" ;
-#ifdef _WIN32
-    lib_path /= "my_lib.dll";
-#elif __APPLE__
-    lib_path /= "my_lib.dylib";
-#else
-    lib_path /= "my_lib.so";
-#endif
-    std::string library_full_path = lib_path.string();
 
     try {
-        // 1. Register Struct "Point"
-        json register_struct_request = {
-            {"command", "register_struct"},
-            {"request_id", "req-1"},
-            {"payload", {
-                {"struct_name", "Point"},
-                {"definition", {
-                    {{"name", "x"}, {"type", "int32"}},
-                    {{"name", "y"}, {"type", "int32"}}
-                }}
-            }}
-        };
-        std::cout << "Registering struct 'Point'" << std::endl;
-        json register_struct_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            register_struct_request);
-        std::cout << "Response: " << register_struct_response.dump() << std::endl;
+        RpcClient client(argv[1]);
+        client.connect();
 
-        // 2. Load Library
-        json load_library_request = {
-            {"command", "load_library"},
-            {"request_id", "req-2"},
-            {"payload", {{"path", library_full_path}}} // Corrected payload construction
-        };
-        std::cout << "Loading library: " << library_full_path << std::endl;
-        json load_library_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            load_library_request);
-        std::cout << "Response: " << load_library_response.dump() << std::endl;
-        if (load_library_response["status"] == "error") {
-            throw std::runtime_error("Failed to load library: " + load_library_response["error_message"].get<std::string>());
-        }
-        std::string library_id = load_library_response["data"]["library_id"].get<std::string>();
-        std::cout << "Library loaded with ID: " << library_id << std::endl;
+        std::string library_id;
 
-        // 3. Call function 'add'
-        json add_request = {
-            {"command", "call_function"},
-            {"request_id", "req-3"},
-            {"payload", {
+        run_test("Register Point Struct", [&]() {
+            json req = {{"command", "register_struct"}, {"payload", {{"struct_name", "Point"}, {"definition", {{{"name", "x"}, {"type", "int32"}}, {{"name", "y"}, {"type", "int32"}}}}}}};
+            json res = client.send_request(req);
+            if (res["status"] != "success") throw std::runtime_error("Failed to register struct");
+        });
+
+        run_test("Load Library", [&]() {
+            fs::path lib_path = fs::current_path() / "build" / "test_lib";
+            #ifdef _WIN32
+                lib_path /= "my_lib.dll";
+            #elif __APPLE__
+                lib_path /= "my_lib.dylib";
+            #else
+                lib_path /= "my_lib.so";
+            #endif
+            json req = {{"command", "load_library"}, {"payload", {{"path", lib_path.string()}}}};
+            json res = client.send_request(req);
+            if (res["status"] != "success") throw std::runtime_error("Failed to load library");
+            library_id = res["data"]["library_id"].get<std::string>();
+        });
+
+        run_test("Add Function", [&]() {
+            json req = {{"command", "call_function"}, {"payload", {{"library_id", library_id}, {"function_name", "add"}, {"return_type", "int32"}, {"args", {{{"type", "int32"}, {"value", 10}}, {{"type", "int32"}, {"value", 20}}}}}}};
+            json res = client.send_request(req);
+            if (res["data"]["return"]["value"] != 30) throw std::runtime_error("Add function failed");
+        });
+
+        run_test("Callback Functionality", [&]() {
+            json reg_req = {{"command", "register_callback"}, {"payload", {{"return_type", "void"}, {"args_type", {"string", "int32"}}}}};
+            json reg_res = client.send_request(reg_req);
+            std::string callback_id = reg_res["data"]["callback_id"].get<std::string>();
+
+            json call_req = {{"command", "call_function"}, {"payload", {{"library_id", library_id}, {"function_name", "call_my_callback"}, {"return_type", "void"}, {"args", {{{"type", "callback"}, {"value", callback_id}}, {{"type", "string"}, {"value", "Hello from C++!"}}}}}}};
+            client.send_request(call_req);
+            // In this simple example, we just check the console output for the event.
+            // A more robust client would use a queue.
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        });
+
+        run_test("Write Out Buff Functionality", [&]() {
+            int buffer_capacity = 64;
+            json req = {{"command", "call_function"}, {"payload", {
                 {"library_id", library_id},
-                {"function_name", "add"},
+                {"function_name", "writeOutBuff"},
                 {"return_type", "int32"},
                 {"args", {
-                    {{"type", "int32"}, {"value", 10}},
-                    {{"type", "int32"}, {"value", 20}}
+                    {{"type", "buffer"}, {"direction", "out"}, {"size", buffer_capacity}},
+                    {{"type", "pointer"}, {"target_type", "int32"}, {"direction", "inout"}, {"value", buffer_capacity}}
                 }}
-            }}
-        };
-        std::cout << "Calling function 'add' with args (10, 20)" << std::endl;
-        json add_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            add_request);
-        std::cout << "Response: " << add_response.dump() << std::endl;
-        if (add_response["status"] == "error") {
-            throw std::runtime_error("Failed to call 'add': " + add_response["error_message"].get<std::string>());
-        }
-        std::cout << "Result of add(10, 20) is: " << add_response["data"]["return"]["value"].get<int>() << std::endl;
+            }}};
+            json res = client.send_request(req);
+            if (res["status"] != "success") throw std::runtime_error("writeOutBuff call failed");
+            
+            int return_code = res["data"]["return"]["value"].get<int>();
+            if (return_code != 0) throw std::runtime_error("writeOutBuff returned non-zero status");
 
-        // 4. Call function 'greet'
-        json greet_request = {
-            {"command", "call_function"},
-            {"request_id", "req-4"},
-            {"payload", {
-                {"library_id", library_id},
-                {"function_name", "greet"},
-                {"return_type", "string"},
-                {"args", {
-                    {{"type", "string"}, {"value", "C++ World"}}
-                }}
-            }}
-        };
-        std::cout << "Calling function 'greet' with arg ('C++ World')" << std::endl;
-        json greet_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            greet_request);
-        std::cout << "Response: " << greet_response.dump() << std::endl;
-        if (greet_response["status"] == "error") {
-            throw std::runtime_error("Failed to call 'greet': " + greet_response["error_message"].get<std::string>());
-        }
-        std::cout << "Result of greet('C++ World') is: '" << greet_response["data"]["return"]["value"].get<std::string>() << "'" << std::endl;
-
-        // 5. Call function 'process_point_by_val'
-        json process_point_by_val_request = {
-            {"command", "call_function"},
-            {"request_id", "req-5"},
-            {"payload", {
-                {"library_id", library_id},
-                {"function_name", "process_point_by_val"},
-                {"return_type", "int32"},
-                {"args", {
-                    {{"type", "Point"}, {"value", {{"x", 10}, {"y", 20}}}}
-                }}
-            }}
-        };
-        std::cout << "Calling function 'process_point_by_val' with args (Point {x=10, y=20})" << std::endl;
-        json process_point_by_val_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            process_point_by_val_request);
-        std::cout << "Response: " << process_point_by_val_response.dump() << std::endl;
-        if (process_point_by_val_response["status"] == "error") {
-            throw std::runtime_error("Failed to call 'process_point_by_val': " + process_point_by_val_response["error_message"].get<std::string>());
-        }
-        std::cout << "Result of process_point_by_val is: " << process_point_by_val_response["data"]["return"]["value"].get<int>() << std::endl;
-
-        // 6. Call function 'process_point_by_ptr'
-        json process_point_by_ptr_request = {
-            {"command", "call_function"},
-            {"request_id", "req-6"},
-            {"payload", {
-                {"library_id", library_id},
-                {"function_name", "process_point_by_ptr"},
-                {"return_type", "int32"},
-                {"args", {
-                    {{"type", "pointer"}, {"value", {{"x", 5}, {"y", 6}}}, {"target_type", "Point"}} // Corrected for pointer
-                }}
-            }}
-        };
-        std::cout << "Calling function 'process_point_by_ptr' with args (Point {x=5, y=6})" << std::endl;
-        json process_point_by_ptr_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            process_point_by_ptr_request);
-        std::cout << "Response: " << process_point_by_ptr_response.dump() << std::endl;
-        if (process_point_by_ptr_response["status"] == "error") {
-            throw std::runtime_error("Failed to call 'process_point_by_ptr': " + process_point_by_ptr_response["error_message"].get<std::string>());
-        }
-        std::cout << "Result of process_point_by_ptr is: " << process_point_by_ptr_response["data"]["return"]["value"].get<int>() << std::endl;
-
-        // 7. Call function 'create_point'
-        json create_point_request = {
-            {"command", "call_function"},
-            {"request_id", "req-7"},
-            {"payload", {
-                {"library_id", library_id},
-                {"function_name", "create_point"},
-                {"return_type", "Point"},
-                {"args", {
-                    {{"type", "int32"}, {"value", 100}},
-                    {{"type", "int32"}, {"value", 200}}
-                }}
-            }}
-        };
-        std::cout << "Calling function 'create_point' with args (100, 200)" << std::endl;
-        json create_point_response = send_request(
-#ifdef _WIN32
-            pipe,
-#else
-            sock,
-#endif
-            create_point_request);
-        std::cout << "Response: " << create_point_response.dump() << std::endl;
-        if (create_point_response["status"] == "error") {
-            throw std::runtime_error("Failed to call 'create_point': " + create_point_response["error_message"].get<std::string>());
-        }
-        std::cout << "Result of create_point is: " << create_point_response["data"]["return"]["value"].dump() << std::endl;
+            json out_params = res["data"]["out_params"];
+            std::string buffer_content;
+            int updated_size = -1;
+            for(const auto& param : out_params) {
+                if (param["index"] == 0) buffer_content = param["value"].get<std::string>();
+                if (param["index"] == 1) updated_size = param["value"].get<int>();
+            }
+            
+            std::string expected_string = "Hello from writeOutBuff!";
+            if (buffer_content != expected_string) throw std::runtime_error("Buffer content mismatch");
+            if (updated_size != expected_string.length()) throw std::runtime_error("Updated size mismatch");
+        });
 
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "An error occurred: " << e.what() << std::endl;
     }
-
-#ifdef _WIN32
-    CloseHandle(pipe);
-#else
-    close(sock);
-#endif
-    std::cout << "Connection closed." << std::endl;
 
     return 0;
 }
