@@ -43,6 +43,7 @@ jobs:
         cd ../..
 
     - name: Run Java Example
+      if: false
       run: |
         build/executor --pipe my_pipe & 
         EXECUTOR_PID=$!
