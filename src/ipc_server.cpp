@@ -147,7 +147,7 @@ public:
     }
 
     void listen(const std::string& name) override {
-        pipe_name_ = "\\.\pipe\" + name;
+        pipe_name_ = "\\\\.\\pipe\\" + name;
     }
 
     std::unique_ptr<ClientConnection> accept() override {
