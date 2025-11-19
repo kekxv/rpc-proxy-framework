@@ -250,7 +250,7 @@ int main(int argc, char* argv[]) {
             client.send_request(call_req);
             // In this simple example, we just check the console output for the event.
             // A more robust client would use a queue.
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
         });
 
         run_test("Write Out Buff Functionality", [&]() {

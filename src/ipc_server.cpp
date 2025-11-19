@@ -101,27 +101,29 @@ public:
     }
   }
 
-      std::string read() override
+  std::string read() override
+  {
+    uint32_t net_msg_len;
+    ssize_t bytes_received_for_len = 0;
+    // std::cout << "[Executor: UnixConnection::read] Waiting to receive 4-byte length header..." << std::endl;
+    while (bytes_received_for_len < sizeof(net_msg_len))
     {
-      uint32_t net_msg_len;
-      ssize_t bytes_received_for_len = 0;
-      std::cout << "[Executor: UnixConnection::read] Waiting to receive 4-byte length header..." << std::endl;
-      while (bytes_received_for_len < sizeof(net_msg_len)) {
-          ssize_t current_read = recv(sock_, reinterpret_cast<char*>(&net_msg_len) + bytes_received_for_len, sizeof(net_msg_len) - bytes_received_for_len, 0);
-          if (current_read == 0) {
-              std::cout << "[Executor: UnixConnection::read] Client disconnected during length header read." << std::endl;
-              is_open_ = false;
-              return "";
-          }
-          if (current_read == -1) {
-              std::cerr << "[Executor: UnixConnection::read] Error receiving length header: " << strerror(errno) << std::endl;
-              is_open_ = false;
-              return "";
-          }
-          bytes_received_for_len += current_read;
-          std::cout << "[Executor: UnixConnection::read] Received " << bytes_received_for_len << " of " << sizeof(net_msg_len) << " bytes for length header." << std::endl;
+      ssize_t current_read = recv(sock_, reinterpret_cast<char*>(&net_msg_len) + bytes_received_for_len,
+                                  sizeof(net_msg_len) - bytes_received_for_len, 0);
+      if (current_read == 0)
+      {
+        std::cout << "[Executor: UnixConnection::read] Client disconnected during length header read." << std::endl;
+        is_open_ = false;
+        return "";
       }
-      std::cout << "[Executor: UnixConnection::read] 4-byte length header fully received." << std::endl;
+      if (current_read == -1)
+      {
+        std::cerr << "[Executor: UnixConnection::read] Error receiving length header: " << strerror(errno) << std::endl;
+        is_open_ = false;
+        return "";
+      }
+      bytes_received_for_len += current_read;
+    }
     uint32_t msg_len = ntohl(net_msg_len);
     std::vector<char> buffer(msg_len);
     ssize_t total_read = 0;

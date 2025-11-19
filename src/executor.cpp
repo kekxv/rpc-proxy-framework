@@ -100,11 +100,28 @@ void Executor::run(const std::string& pipe_name) {
                 break;
             }
 
-            std::string response_str = handle_session_request(
-                request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+            std::string response_str;
+            try {
+                response_str = handle_session_request(
+                    request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+            } catch (const std::exception& e) {
+                std::cerr << "[Executor] Error handling request: " << e.what() << std::endl;
+                // Attempt to send an error response if possible
+                json error_response;
+                error_response["status"] = "error";
+                error_response["error_message"] = e.what();
+                // If request_str was valid JSON, we can try to get request_id
+                try {
+                    json request_json = json::parse(request_str);
+                    error_response["request_id"] = request_json.value("request_id", "");
+                } catch (...) {
+                    // Ignore if request_str itself is malformed
+                }
+                response_str = error_response.dump();
+            }
             
             if (!connection->write(response_str)) {
-                // A failed write also indicates the client has disconnected.
+                std::cerr << "[Executor] Failed to write response (or error response). Client likely disconnected." << std::endl;
                 break;
             }
         }
