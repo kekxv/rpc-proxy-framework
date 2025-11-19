@@ -3,42 +3,28 @@
 #include "ffi_dispatcher.h"
 #include "lib_manager.h"
 #include "callback_manager.h" // Include CallbackManager
-#include "ipc_server.h"       // Include IpcServer for dummy instance
 #include <memory>
 #include <iostream>
 
-// Forward declarations for test_lib functions (for direct calling if needed, though FfiDispatcher will handle it)
+// Forward declarations for test_lib functions
 extern "C" {
 int add(int a, int b);
 char* greet(char* name);
-// Add other test_lib functions as needed
 }
-
-// Dummy IpcServer for testing FfiDispatcher in isolation
-class DummyIpcServer : public IpcServer {
-public:
-    void start(const std::string& pipe_name, RequestHandler handler) {
-        // Do nothing for tests
-    }
-    void sendEvent(const nlohmann::json& event_json) {
-        // Do nothing for tests, or log if needed
-        std::cout << "DummyIpcServer received event: " << event_json.dump() << std::endl;
-    }
-};
 
 class ExecutorTest : public ::testing::Test
 {
 protected:
   StructManager struct_manager;
-  DummyIpcServer dummy_ipc_server; // Dummy IPC server
-  CallbackManager callback_manager; // Callback manager
+  // For FfiDispatcher tests, we don't need a real connection, so we pass nullptr.
+  // This means any test that actually triggers a callback would fail, but none of these do.
+  CallbackManager callback_manager;
   FfiDispatcher ffi_dispatcher;
   LibManager lib_manager;
 
   ExecutorTest() : 
     struct_manager(),
-    dummy_ipc_server(),
-    callback_manager(&dummy_ipc_server, &struct_manager), // Pass dummy IPC and real StructManager
+    callback_manager(nullptr, &struct_manager), // Pass nullptr for ClientConnection
     ffi_dispatcher(struct_manager, &callback_manager) // Pass CallbackManager to FfiDispatcher
   {
   }

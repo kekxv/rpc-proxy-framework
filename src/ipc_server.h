@@ -2,22 +2,30 @@
 #define IPC_SERVER_H
 
 #include <string>
-#include <functional>
-#include <nlohmann/json.hpp> // Include nlohmann/json for json type
+#include <memory>
+#include <nlohmann/json.hpp>
 
+// Represents a single client connection
+class ClientConnection {
+public:
+    virtual ~ClientConnection() = default;
+    virtual std::string read() = 0;
+    virtual bool write(const std::string& message) = 0;
+    virtual bool sendEvent(const nlohmann::json& event_json) = 0;
+    virtual bool isOpen() = 0;
+};
+
+// Abstract base class for the IPC server
 class IpcServer {
 public:
-    using RequestHandler = std::function<std::string(const std::string&)>;
+    virtual ~IpcServer() = default;
 
-    IpcServer();
-    ~IpcServer();
+    virtual void listen(const std::string& pipe_name) = 0;
+    virtual std::unique_ptr<ClientConnection> accept() = 0;
+    virtual void stop() = 0;
 
-    void start(const std::string& pipe_name, RequestHandler handler);
-    void sendEvent(const nlohmann::json& event_json); // New method to send asynchronous events
-
-public: // Changed from private to public
-    class Impl;
-    Impl* pimpl;
+    // Factory method to create a platform-specific server instance
+    static std::unique_ptr<IpcServer> create();
 };
 
 #endif // IPC_SERVER_H
