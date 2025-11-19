@@ -119,6 +119,7 @@ if (WIN32)
             COMMENT "Copying executable to bin directory..."
     )
 endif ()
+add_definitions(-DUUID_SYSTEM_GENERATOR)
 
 # --- 定义可执行文件 ---
 add_executable(executor
