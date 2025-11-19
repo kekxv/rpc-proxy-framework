@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h> // Required for uint64_t
+#include <string.h> // Required for strlen and strcpy
 
 #ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
@@ -73,5 +74,29 @@ DLLEXPORT void call_my_callback(void (*callback_fn)(const char* message, int val
     } else {
         printf("Callback function is NULL.\n");
     }
+}
+
+// New function to demonstrate writing to an output buffer
+// buff: output buffer, size: input buffer capacity, output actual size written
+// buff: output buffer, size: input buffer capacity, output actual size written
+// Returns 0 on success, -1 for invalid arguments, -2 for buffer too small
+DLLEXPORT int writeOutBuff(char* buff, int* size) {
+    if (buff == NULL || size == NULL) {
+        return -1; // Invalid arguments
+    }
+
+    const char* data_to_write = "Hello from writeOutBuff!";
+    int data_len = strlen(data_to_write);
+    int required_size = data_len + 1; // +1 for null terminator
+
+    if (*size < required_size) {
+        // Not enough space, do not write anything, just report error.
+        return -2; // Buffer too small
+    }
+
+    strcpy(buff, data_to_write);
+    *size = data_len; // Update size to actual data length written (excluding null terminator)
+
+    return 0; // Success
 }
 

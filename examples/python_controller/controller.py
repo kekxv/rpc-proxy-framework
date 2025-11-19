@@ -291,7 +291,7 @@ def test_add_function(client, library_id):
   ]
   response = client.call_function(library_id, "add", "int32", args)
   assert response["status"] == "success", f"Failed to call 'add': {response.get('error_message')}"
-  assert response["data"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
 
 def test_greet_function(client, library_id):
   print(f"{Colors.BLUE}Calling 'greet' function ('World')...{Colors.RESET}")
@@ -300,7 +300,7 @@ def test_greet_function(client, library_id):
   ]
   response = client.call_function(library_id, "greet", "string", args)
   assert response["status"] == "success", f"Failed to call 'greet': {response.get('error_message')}"
-  assert response["data"]["value"] == "Hello, World", f"Expected 'Hello, World', got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == "Hello, World", f"Expected 'Hello, World', got {response['data']['value']}"
 
 def test_process_point_by_val(client, library_id):
   print(f"{Colors.BLUE}Calling 'process_point_by_val' function (Point{{x=5, y=10}})...{Colors.RESET}")
@@ -310,7 +310,7 @@ def test_process_point_by_val(client, library_id):
   ]
   response = client.call_function(library_id, "process_point_by_val", "int32", args)
   assert response["status"] == "success", f"Failed to call 'process_point_by_val': {response.get('error_message')}"
-  assert response["data"]["value"] == 15, f"Expected 15, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == 15, f"Expected 15, got {response['data']['value']}"
 
 def test_process_point_by_ptr(client, library_id):
   print(f"{Colors.BLUE}Calling 'process_point_by_ptr' function (Point{{x=10, y=20}})...{Colors.RESET}")
@@ -320,7 +320,7 @@ def test_process_point_by_ptr(client, library_id):
   ]
   response = client.call_function(library_id, "process_point_by_ptr", "int32", args)
   assert response["status"] == "success", f"Failed to call 'process_point_by_ptr': {response.get('error_message')}"
-  assert response["data"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == 30, f"Expected 30, got {response['data']['value']}"
 
 def test_create_point(client, library_id):
   print(f"{Colors.BLUE}Calling 'create_point' function (x=100, y=200)...{Colors.RESET}")
@@ -330,7 +330,7 @@ def test_create_point(client, library_id):
   ]
   response = client.call_function(library_id, "create_point", "Point", args)
   assert response["status"] == "success", f"Failed to call 'create_point': {response.get('error_message')}"
-  assert response["data"]["value"] == {"x": 100, "y": 200}, f"Expected {{'x': 100, 'y': 200}}, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == {"x": 100, "y": 200}, f"Expected {{'x': 100, 'y': 200}}, got {response['data']['value']}"
 
 def test_register_line_struct(client):
   line_struct_definition = [
@@ -350,7 +350,7 @@ def test_get_line_length(client, library_id):
   ]
   response = client.call_function(library_id, "get_line_length", "int32", args)
   assert response["status"] == "success", f"Failed to call 'get_line_length': {response.get('error_message')}"
-  assert response["data"]["value"] == 10, f"Expected 10, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == 10, f"Expected 10, got {response['data']['value']}"
 
 def test_sum_points(client, library_id):
   print(f"{Colors.BLUE}Calling 'sum_points' function with an array of Points...{Colors.RESET}")
@@ -365,7 +365,7 @@ def test_sum_points(client, library_id):
   ]
   response = client.call_function(library_id, "sum_points", "int32", args)
   assert response["status"] == "success", f"Failed to call 'sum_points': {response.get('error_message')}"
-  assert response["data"]["value"] == 12, f"Expected 12, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == 12, f"Expected 12, got {response['data']['value']}"
 
 def test_create_line(client, library_id):
   print(f"{Colors.BLUE}Calling 'create_line' function...{Colors.RESET}")
@@ -378,7 +378,7 @@ def test_create_line(client, library_id):
   response = client.call_function(library_id, "create_line", "Line", args)
   assert response["status"] == "success", f"Failed to call 'create_line': {response.get('error_message')}"
   expected_line = {"p1": {"x": 10, "y": 11}, "p2": {"x": 12, "y": 13}}
-  assert response["data"]["value"] == expected_line, f"Expected {expected_line}, got {response['data']['value']}"
+  assert response["data"]["return"]["value"] == expected_line, f"Expected {expected_line}, got {response['data']['value']}"
 
 def test_callback_functionality(client, library_id):
   print(f"{Colors.BLUE}Registering callback signature (void, [string, int32])...{Colors.RESET}")
@@ -415,6 +415,51 @@ def test_callback_functionality(client, library_id):
   response = client.unregister_callback(callback_id)
   assert response["status"] == "success", f"Failed to unregister callback: {response.get('error_message')}"
   print(f"{Colors.GREEN}Callback unregistered successfully.{Colors.RESET}")
+
+def test_write_out_buff(client, library_id):
+  print(f"{Colors.BLUE}Calling 'writeOutBuff' function with IN/OUT params...{Colors.RESET}")
+  
+  buffer_capacity = 64
+  args = [
+      # Arg 0: The output buffer
+      {"type": "buffer", "direction": "out", "size": buffer_capacity},
+      # Arg 1: The size, passed as an IN/OUT pointer
+      {"type": "pointer", "target_type": "int32", "direction": "inout", "value": buffer_capacity}
+  ]
+  
+  response = client.call_function(library_id, "writeOutBuff", "int32", args)
+  assert response["status"] == "success", f"Failed to call 'writeOutBuff': {response.get('error_message')}"
+  
+  # --- Verify the new complex response format ---
+  
+  # 1. Verify the direct return value (the status code)
+  return_data = response["data"]["return"]
+  assert return_data["type"] == "int32", f"Expected return type int32, got {return_data['type']}"
+  assert return_data["value"] == 0, f"Expected return value 0 (success), got {return_data['value']}"
+  
+  # 2. Verify the output parameters
+  out_params = response["data"]["out_params"]
+  assert len(out_params) == 2, f"Expected 2 output parameters, got {len(out_params)}"
+  
+  # Find the buffer and the size from the out_params array
+  # Their order is not guaranteed, so we check by index.
+  out_buffer_val = None
+  out_size_val = None
+  for param in out_params:
+      if param["index"] == 0: # This was our buffer
+          out_buffer_val = param["value"]
+      elif param["index"] == 1: # This was our size
+          out_size_val = param["value"]
+
+  assert out_buffer_val is not None, "Did not receive output buffer in response"
+  assert out_size_val is not None, "Did not receive output size in response"
+
+  # 3. Assert the values
+  expected_string = "Hello from writeOutBuff!"
+  assert out_buffer_val == expected_string, f"Expected buffer content '{expected_string}', got '{out_buffer_val}'"
+  assert out_size_val == len(expected_string), f"Expected updated size {len(expected_string)}, got {out_size_val}"
+
+  print(f"{Colors.GREEN}Buffer content verified: '{out_buffer_val}' (Size: {out_size_val}){Colors.RESET}")
 
 
 def main():
@@ -459,6 +504,7 @@ def main():
     run_test(client, "Sum Points Function", test_sum_points, library_id)
     run_test(client, "Create Line Function", test_create_line, library_id)
     run_test(client, "Callback Functionality", test_callback_functionality, library_id)
+    run_test(client, "Write Out Buffer Functionality", test_write_out_buff, library_id)
 
   except Exception as e:
     print(f"\n{Colors.BOLD}{Colors.BRIGHT_RED}An error occurred during tests: {e}{Colors.RESET}")

@@ -14,8 +14,9 @@
 
 using json = nlohmann::json;
 
-// Forward declaration
+// Forward declarations
 class CallbackManager;
+struct AllocatedArg;
 
 // RAII wrapper for argument memory.
 // This class ensures that all memory allocated for FFI arguments is
@@ -101,7 +102,7 @@ private:
     ffi_type* get_ffi_type_for_name(const std::string& type_name) const;
     void populate_memory_from_json(char* dest_ptr, const json& value_json, const std::string& type_name, FfiArgs& arg_storage);
     json read_json_from_memory(const char* src_ptr, const std::string& type_name) const;
-    void* allocate_and_populate_arg(const json& arg_json, FfiArgs& arg_storage);
+    void* allocate_and_populate_arg(const json& arg_json, FfiArgs& arg_storage, std::vector<std::unique_ptr<AllocatedArg>>& allocated_args, int index);
 };
 
 #endif //RPC_PROXY_FRAMEWORK_FFI_DISPATCHER_H
