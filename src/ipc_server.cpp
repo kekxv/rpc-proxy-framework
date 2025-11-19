@@ -104,11 +104,14 @@ public:
   std::string read() override
   {
     uint32_t net_msg_len;
-    ssize_t read_bytes = recv(sock_, &net_msg_len, sizeof(net_msg_len), 0);
-    if (read_bytes <= 0)
-    {
-      is_open_ = false;
-      return "";
+    ssize_t bytes_received_for_len = 0;
+    while (bytes_received_for_len < sizeof(net_msg_len)) {
+        ssize_t current_read = recv(sock_, reinterpret_cast<char*>(&net_msg_len) + bytes_received_for_len, sizeof(net_msg_len) - bytes_received_for_len, 0);
+        if (current_read <= 0) {
+            is_open_ = false;
+            return "";
+        }
+        bytes_received_for_len += current_read;
     }
 
     uint32_t msg_len = ntohl(net_msg_len);
