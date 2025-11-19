@@ -39,7 +39,9 @@ public class RpcClient implements AutoCloseable {
     // 状态管理
     private final AtomicInteger requestIdCounter = new AtomicInteger(0);
     private final Map<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
-    private Consumer<JSONObject> eventHandler = (json) -> System.out.println("Unhandled Event: " + json);
+    
+    // 事件队列
+    private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
 
     public RpcClient(String pipeName) {
         this.pipeName = pipeName;
@@ -153,10 +155,30 @@ public class RpcClient implements AutoCloseable {
     public JSONObject sendRequest(JSONObject request) throws Exception {
         return sendRequest(request, 10, TimeUnit.SECONDS);
     }
-
-    public void setEventHandler(Consumer<JSONObject> handler) {
-        this.eventHandler = handler;
+    
+    /**
+     * 从事件队列获取事件
+     * @param timeout 超时时间
+     * @param unit 时间单位
+     * @return 事件的 JSONObject 形式
+     * @throws InterruptedException 如果线程在等待时被中断
+     * @throws TimeoutException 如果在指定时间内没有事件可用
+     */
+    public JSONObject getEvent(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
+        JSONObject event = eventQueue.poll(timeout, unit);
+        if (event == null) {
+            throw new TimeoutException("Timeout waiting for event.");
+        }
+        return event;
     }
+
+    /**
+     * 清空事件队列
+     */
+    public void clearEvents() {
+        eventQueue.clear();
+    }
+
 
     /**
      * 接收线程循环 (对应 C++ 的 receive_messages)
@@ -193,15 +215,17 @@ public class RpcClient implements AutoCloseable {
                         System.out.println("<-- Received Response id=" + reqId);
                     }
                 } else if (response.has("event")) {
-                    if (eventHandler != null) {
-                        eventHandler.accept(response);
-                    }
+                    System.out.println("<-- Received Event [" + response.optString("event") + "]: " + response.toString());
+                    eventQueue.put(response); // 将事件放入队列
                 }
             }
         } catch (IOException e) {
             if (running.get()) {
                 System.err.println("Connection broken: " + e.getMessage());
             }
+        } catch (InterruptedException e) {
+            // 线程中断，通常是 shutdown
+            Thread.currentThread().interrupt();
         } finally {
             close(); // 确保资源清理
         }
@@ -225,6 +249,12 @@ public class RpcClient implements AutoCloseable {
                 future.completeExceptionally(new IOException("Client closed"));
             }
             pendingRequests.clear();
+
+            // 3. 中断任何等待 eventQueue 的线程
+            // eventQueue.clear() 只是清空队列内容，不会中断等待在 take() 上的线程
+            // 但如果 receiveLoop 中断，则不会再往队列 put，等待 take() 的线程最终会超时。
+            // 确保线程能响应中断，否则这里无法直接中断其他线程。
+            // 通常，等待在 BlockingQueue 上的线程会在队列关闭或被中断时抛出 InterruptedException。
         }
     }
 }

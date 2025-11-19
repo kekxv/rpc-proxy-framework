@@ -5,9 +5,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeUnit; // Import TimeUnit for timeouts
 
 public class App {
 
@@ -40,12 +38,12 @@ public class App {
 
             client.connect();
 
-            // 准备一个队列来同步等待 Callback 事件 (类似 C++ 的 simple example)
-            BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
-            client.setEventHandler(json -> {
-                System.out.println("<-- Received Event [" + json.optString("event") + "]: " + json);
-                eventQueue.offer(json);
-            });
+            // RpcClient 现在内部管理事件队列，不再需要在此处传递 eventHandler
+            // BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
+            // client.setEventHandler(json -> {
+            //     System.out.println("<-- Received Event [" + json.optString("event") + "]: " + json);
+            //     eventQueue.offer(json);
+            // });
 
             // 全局变量保存 libId (Java 这里的闭包不像 C++ reference 那么方便，用数组绕一下)
             final String[] libraryId = {null};
@@ -109,8 +107,10 @@ public class App {
                 if (val != 30) throw new RuntimeException("Add function failed, got " + val);
             });
 
-            // 4. Callback
-            runTest("Callback Functionality", () -> {
+            // 4. Single Callback Functionality
+            runTest("Single Callback Functionality", () -> {
+                client.clearEvents(); // Clear any stale events
+
                 JSONObject regReq = new JSONObject()
                     .put("command", "register_callback")
                     .put("payload", new JSONObject()
@@ -119,6 +119,7 @@ public class App {
                     );
                 JSONObject regRes = client.sendRequest(regReq);
                 String cbId = regRes.getJSONObject("data").getString("callback_id");
+                System.out.println("Callback registered with ID: " + cbId);
 
                 JSONObject callReq = new JSONObject()
                     .put("command", "call_function")
@@ -132,16 +133,88 @@ public class App {
                         )
                     );
                 client.sendRequest(callReq);
+                System.out.println("call_my_callback returned successfully, expecting one event...");
 
-                // 等待事件
-                JSONObject event = eventQueue.poll(2, TimeUnit.SECONDS);
+                JSONObject event = client.getEvent(5, TimeUnit.SECONDS);
                 if (event == null) throw new RuntimeException("Callback event timeout");
                 if (!"invoke_callback".equals(event.optString("event"))) {
-                    throw new RuntimeException("Wrong event type");
+                    throw new RuntimeException("Wrong event type: " + event.optString("event"));
                 }
+                if (!cbId.equals(event.getJSONObject("payload").optString("callback_id"))) {
+                    throw new RuntimeException("Callback ID mismatch");
+                }
+                if (!"Hello from Java!".equals(event.getJSONObject("payload").getJSONArray("args").getJSONObject(0).optString("value"))) {
+                    throw new RuntimeException("Callback arg 0 value mismatch");
+                }
+                System.out.println("Successfully received and verified invoke_callback event.");
+
+                JSONObject unregReq = new JSONObject()
+                    .put("command", "unregister_callback")
+                    .put("payload", new JSONObject().put("callback_id", cbId));
+                client.sendRequest(unregReq);
+                System.out.println("Callback unregistered successfully.");
             });
 
-            // 5. Write Out Buff
+            // 5. Multi-Callback Functionality
+            runTest("Multi-Callback Functionality", () -> {
+                client.clearEvents(); // Clear any stale events
+
+                JSONObject regReq = new JSONObject()
+                    .put("command", "register_callback")
+                    .put("payload", new JSONObject()
+                        .put("return_type", "void")
+                        .put("args_type", new JSONArray().put("string").put("int32"))
+                    );
+                JSONObject regRes = client.sendRequest(regReq);
+                String multiCbId = regRes.getJSONObject("data").getString("callback_id");
+                System.out.println("Multi-Callback registered with ID: " + multiCbId);
+
+                int numCalls = 3;
+                JSONObject callReq = new JSONObject()
+                    .put("command", "call_function")
+                    .put("payload", new JSONObject()
+                        .put("library_id", libraryId[0])
+                        .put("function_name", "call_multi_callbacks")
+                        .put("return_type", "void")
+                        .put("args", new JSONArray()
+                            .put(new JSONObject().put("type", "callback").put("value", multiCbId))
+                            .put(new JSONObject().put("type", "int32").put("value", numCalls))
+                        )
+                    );
+                client.sendRequest(callReq);
+                System.out.println("call_multi_callbacks returned successfully, expecting " + numCalls + " events...");
+
+                for (int i = 0; i < numCalls; i++) {
+                    JSONObject event = client.getEvent(5, TimeUnit.SECONDS);
+                    if (event == null) throw new RuntimeException("Multi-callback event " + (i + 1) + " timeout");
+                    if (!"invoke_callback".equals(event.optString("event"))) {
+                        throw new RuntimeException("Wrong event type for call " + (i + 1) + ": " + event.optString("event"));
+                    }
+                    if (!multiCbId.equals(event.getJSONObject("payload").optString("callback_id"))) {
+                        throw new RuntimeException("Multi-callback ID mismatch for call " + (i + 1));
+                    }
+                    
+                    String expectedMessage = "Message from native code, call " + (i + 1);
+                    int expectedValue = i + 1;
+                    
+                    if (!expectedMessage.equals(event.getJSONObject("payload").getJSONArray("args").getJSONObject(0).optString("value"))) {
+                        throw new RuntimeException("Multi-callback arg 0 value mismatch for call " + (i + 1));
+                    }
+                    if (expectedValue != event.getJSONObject("payload").getJSONArray("args").getJSONObject(1).optInt("value")) {
+                        throw new RuntimeException("Multi-callback arg 1 value mismatch for call " + (i + 1));
+                    }
+                    System.out.println("  Received and verified multi-callback event " + (i + 1) + "/" + numCalls + ": msg='" + event.getJSONObject("payload").getJSONArray("args").getJSONObject(0).optString("value") + "', val=" + event.getJSONObject("payload").getJSONArray("args").getJSONObject(1).optInt("value"));
+                }
+                
+                JSONObject unregReq = new JSONObject()
+                    .put("command", "unregister_callback")
+                    .put("payload", new JSONObject().put("callback_id", multiCbId));
+                client.sendRequest(unregReq);
+                System.out.println("Multi-Callback unregistered successfully.");
+            });
+
+
+            // 6. Write Out Buff
             runTest("Write Out Buff Functionality", () -> {
                 int bufferCapacity = 64;
                 JSONObject req = new JSONObject()
@@ -174,6 +247,7 @@ public class App {
                 String expected = "Hello from writeOutBuff!";
                 if (!expected.equals(bufferContent)) throw new RuntimeException("Buffer content mismatch");
                 if (updatedSize != expected.length()) throw new RuntimeException("Size mismatch");
+                System.out.println("Buffer content verified: '" + bufferContent + "' (Size: " + updatedSize + ")");
             });
 
         } catch (Exception e) {
