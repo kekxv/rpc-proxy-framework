@@ -11,48 +11,42 @@ import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
 /**
  * 跨平台 RPC 客户端 (Java 8+)
- * <p>
- * 1. Windows: 使用 RandomAccessFile 访问 Named Pipe
- * 2. Linux/Mac: 使用 junixsocket 访问 Unix Domain Socket
- * 3. 支持 try-with-resources (AutoCloseable)
  */
 public class RpcClient implements AutoCloseable {
 
-    // 基础资源
     private final String pipeName;
+    // 使用 AtomicBoolean 确保状态切换的原子性
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private Thread receiveThread;
 
-    // IO 流 (统一抽象)
+    // 接收线程 (volatile 确保可见性)
+    private volatile Thread receiveThread;
+
+    // IO 流
     private DataInputStream inputStream;
     private DataOutputStream outputStream;
 
-    // Windows 特有资源
+    // 平台特定资源
     private RandomAccessFile windowsPipeRaf;
-    // Linux/Mac 特有资源
-    private Closeable unixSocket; // 使用 Closeable 避免直接依赖 Socket 类导致编译问题
+    private Closeable unixSocket;
 
-    // 状态管理
     private final AtomicInteger requestIdCounter = new AtomicInteger(0);
     private final Map<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
-    
-    // 事件队列
     private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
 
     public RpcClient(String pipeName) {
         this.pipeName = pipeName;
     }
 
-    /**
-     * 连接逻辑，自动判断操作系统
-     */
     public void connect() throws IOException {
-        String os = System.getProperty("os.name").toLowerCase();
+        // 防止重复连接
+        if (running.get()) {
+            return;
+        }
 
+        String os = System.getProperty("os.name").toLowerCase();
         if (os.contains("win")) {
             connectWindows();
         } else {
@@ -61,68 +55,48 @@ public class RpcClient implements AutoCloseable {
 
         running.set(true);
 
-        // 启动接收线程
         receiveThread = new Thread(this::receiveLoop, "Rpc-Receiver-" + pipeName);
-        receiveThread.setDaemon(true); // 守护线程，防止阻塞 JVM 退出
+        receiveThread.setDaemon(true);
         receiveThread.start();
-
-        System.out.println("Connected to " + pipeName);
     }
 
-    // --- Windows 实现: 基于文件的 Named Pipe ---
     private void connectWindows() throws IOException {
-        // Java 中访问 Windows 命名管道的标准方式是当做文件处理
-        // 路径格式: \\.\pipe\name
         String path = "\\\\.\\pipe\\" + pipeName;
         try {
-            // "rw" 模式打开
             windowsPipeRaf = new RandomAccessFile(path, "rw");
-
-            // 包装成流以便使用 readInt/writeBytes 等方法
-            // RandomAccessFile 自身不是 Stream，需要适配
             InputStream is = new InputStream() {
-                @Override
-                public int read() throws IOException { return windowsPipeRaf.read(); }
-                @Override
-                public int read(byte[] b, int off, int len) throws IOException { return windowsPipeRaf.read(b, off, len); }
+                @Override public int read() throws IOException { return windowsPipeRaf.read(); }
+                @Override public int read(byte[] b, int off, int len) throws IOException { return windowsPipeRaf.read(b, off, len); }
             };
             OutputStream os = new OutputStream() {
-                @Override
-                public void write(int b) throws IOException { windowsPipeRaf.write(b); }
-                @Override
-                public void write(byte[] b, int off, int len) throws IOException { windowsPipeRaf.write(b, off, len); }
+                @Override public void write(int b) throws IOException { windowsPipeRaf.write(b); }
+                @Override public void write(byte[] b, int off, int len) throws IOException { windowsPipeRaf.write(b, off, len); }
             };
-
             this.inputStream = new DataInputStream(new BufferedInputStream(is));
             this.outputStream = new DataOutputStream(new BufferedOutputStream(os));
-
         } catch (FileNotFoundException e) {
-            throw new IOException("Could not connect to Windows pipe: " + path + " (Check if server is running)", e);
+            throw new IOException("Could not connect to Windows pipe: " + path, e);
         }
     }
 
-    // --- Linux/Unix 实现: 基于 junixsocket ---
     private void connectUnix() throws IOException {
-        // 路径格式: /tmp/name
         File socketFile = new File("/tmp/" + pipeName);
-
-        // 使用 junixsocket 库
         AFUNIXSocket socket = AFUNIXSocket.newInstance();
         socket.connect(AFUNIXSocketAddress.of(socketFile));
-
         this.unixSocket = socket;
         this.inputStream = new DataInputStream(socket.getInputStream());
         this.outputStream = new DataOutputStream(socket.getOutputStream());
     }
 
-    /**
-     * 发送请求
-     */
     public JSONObject sendRequest(JSONObject request, long timeout, TimeUnit unit)
             throws InterruptedException, ExecutionException, TimeoutException, IOException {
 
+        // 1. 快速检查状态，避免在关闭后尝试发送
+        if (!running.get()) {
+            throw new IOException("Client is closed");
+        }
+
         String reqId = "req-" + requestIdCounter.incrementAndGet();
-        // 拷贝一份避免副作用
         JSONObject reqToSend = new JSONObject(request.toString());
         reqToSend.put("request_id", reqId);
 
@@ -132,15 +106,15 @@ public class RpcClient implements AutoCloseable {
         try {
             byte[] bodyBytes = reqToSend.toString().getBytes(StandardCharsets.UTF_8);
 
-            // 发送锁，防止多线程写入错乱
             synchronized (outputStream) {
-                // C++ htonl 对应 Java 的 writeInt (Big Endian)
+                // Double check inside lock
+                if (!running.get()) {
+                    throw new IOException("Client closed while sending");
+                }
                 outputStream.writeInt(bodyBytes.length);
                 outputStream.write(bodyBytes);
                 outputStream.flush();
             }
-            System.out.println("--> Sending Request [" + reqToSend.optString("command") + "] id=" + reqId);
-
             return future.get(timeout, unit);
         } catch (IOException e) {
             pendingRequests.remove(reqId);
@@ -155,7 +129,7 @@ public class RpcClient implements AutoCloseable {
     public JSONObject sendRequest(JSONObject request) throws Exception {
         return sendRequest(request, 10, TimeUnit.SECONDS);
     }
-    
+
     /**
      * 从事件队列获取事件
      * @param timeout 超时时间
@@ -165,6 +139,10 @@ public class RpcClient implements AutoCloseable {
      * @throws TimeoutException 如果在指定时间内没有事件可用
      */
     public JSONObject getEvent(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
+        // 检查状态，如果已关闭直接抛出异常，避免死等
+        if (!running.get() && eventQueue.isEmpty()) {
+            throw new InterruptedException("Client is closed");
+        }
         JSONObject event = eventQueue.poll(timeout, unit);
         if (event == null) {
             throw new TimeoutException("Timeout waiting for event.");
@@ -179,82 +157,96 @@ public class RpcClient implements AutoCloseable {
         eventQueue.clear();
     }
 
-
-    /**
-     * 接收线程循环 (对应 C++ 的 receive_messages)
-     */
     private void receiveLoop() {
         try {
             while (running.get()) {
-                // 1. 读取长度 (4 bytes, Big Endian)
-                // readInt 是阻塞的，直到读到数据或 EOF
                 int bodyLen;
                 try {
+                    // 如果 socket 关闭，readInt 通常抛出 EOFException 或 SocketException
                     bodyLen = inputStream.readInt();
-                } catch (EOFException e) {
-                    // 连接关闭
-                    break;
+                } catch (EOFException | java.net.SocketException e) {
+                    break; // 正常退出
                 }
 
-                // C++ ntohl 对应 Java readInt (默认就是网络字节序)
-
-                // 2. 读取 Body
                 byte[] bodyBytes = new byte[bodyLen];
-                inputStream.readFully(bodyBytes); // readFully 确保读满 buffer
+                inputStream.readFully(bodyBytes);
 
                 String jsonStr = new String(bodyBytes, StandardCharsets.UTF_8);
                 JSONObject response = new JSONObject(jsonStr);
 
-                // 3. 分发处理
                 if (response.has("request_id")) {
                     String reqId = response.getString("request_id");
                     CompletableFuture<JSONObject> future = pendingRequests.remove(reqId);
                     if (future != null) {
-                        // C++: promise->set_value(response)
                         future.complete(response);
-                        System.out.println("<-- Received Response id=" + reqId);
                     }
                 } else if (response.has("event")) {
-                    System.out.println("<-- Received Event [" + response.optString("event") + "]: " + response.toString());
-                    eventQueue.put(response); // 将事件放入队列
+                    // 如果队列满了，offer 不会阻塞，避免阻塞接收线程
+                    if (!eventQueue.offer(response)) {
+                        System.err.println("Warning: Event queue full, dropping event: " + response);
+                    }
                 }
             }
         } catch (IOException e) {
+            // 只有在运行状态下发生的 IO 异常才打印，避免 close() 导致的噪音
             if (running.get()) {
-                System.err.println("Connection broken: " + e.getMessage());
+                System.err.println("Connection error: " + e.getMessage());
             }
-        } catch (InterruptedException e) {
-            // 线程中断，通常是 shutdown
-            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+             if (running.get()) e.printStackTrace();
         } finally {
-            close(); // 确保资源清理
+            // 确保线程退出时彻底清理资源
+            close();
         }
     }
 
+    /**
+     * 完善后的 close 逻辑
+     */
     @Override
     public void close() {
-        if (running.compareAndSet(true, false)) {
-            System.out.println("Closing connection...");
+        // 1. 原子性地将状态置为 false，防止多线程并发调用 close
+        if (!running.compareAndSet(true, false)) {
+            return;
+        }
 
-            // 1. 关闭流/Socket
+        // 2. 显式中断接收线程
+        // 虽然关闭 Stream 也会让 readInt 抛异常，但 interrupt 是更标准的线程停止方式
+        // 注意：不要中断当前线程（如果是 receiveLoop 内部调用的 close）
+        Thread t = receiveThread;
+        if (t != null && t != Thread.currentThread()) {
+            t.interrupt();
+        }
+
+        // 3. 独立关闭各项资源，使用辅助方法避免一个异常导致后续资源未关闭
+        // 即使包装流(Buffered/Data)关闭了，显式关闭底层资源(RAF/Socket)也是一种好习惯
+        closeQuietly(inputStream);
+        closeQuietly(outputStream);
+        closeQuietly(unixSocket);
+        closeQuietly(windowsPipeRaf);
+
+        // 4. 快速失败所有正在等待的请求
+        // 这样 sendRequest 中的 future.get() 会立刻抛出 ExecutionException，而不是等到超时
+        IOException closedEx = new IOException("Client closed");
+        for (CompletableFuture<JSONObject> future : pendingRequests.values()) {
+            future.completeExceptionally(closedEx);
+        }
+        pendingRequests.clear();
+
+        // 5. (可选) 清理事件队列
+        eventQueue.clear();
+    }
+
+    /**
+     * 辅助方法：安静地关闭资源，吞掉异常
+     */
+    private void closeQuietly(AutoCloseable resource) {
+        if (resource != null) {
             try {
-                if (inputStream != null) inputStream.close();
-                if (outputStream != null) outputStream.close();
-                if (windowsPipeRaf != null) windowsPipeRaf.close();
-                if (unixSocket != null) unixSocket.close();
-            } catch (IOException ignored) {}
-
-            // 2. 清理 Pending Requests
-            for (CompletableFuture<JSONObject> future : pendingRequests.values()) {
-                future.completeExceptionally(new IOException("Client closed"));
+                resource.close();
+            } catch (Exception ignored) {
+                // 关闭时的异常通常可以忽略
             }
-            pendingRequests.clear();
-
-            // 3. 中断任何等待 eventQueue 的线程
-            // eventQueue.clear() 只是清空队列内容，不会中断等待在 take() 上的线程
-            // 但如果 receiveLoop 中断，则不会再往队列 put，等待 take() 的线程最终会超时。
-            // 确保线程能响应中断，否则这里无法直接中断其他线程。
-            // 通常，等待在 BlockingQueue 上的线程会在队列关闭或被中断时抛出 InterruptedException。
         }
     }
 }
