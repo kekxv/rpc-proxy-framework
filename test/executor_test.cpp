@@ -16,10 +16,13 @@ char* greet(char* name);
 // Dummy ClientConnection for testing CallbackManager in isolation
 class DummyClientConnection : public ClientConnection {
 public:
+    nlohmann::json last_event;
+
     std::string read() override { return ""; } // No-op
     bool write(const std::string& message) override { return true; } // No-op
     bool sendEvent(const nlohmann::json& event_json) override {
         std::cout << "DummyClientConnection received event: " << event_json.dump() << std::endl;
+        last_event = event_json;
         return true;
     }
     bool isOpen() override { return true; } // Always open for test purposes
@@ -262,4 +265,46 @@ TEST_F(ExecutorTest, CreateLine)
   ASSERT_EQ(result["value"]["p1"]["y"], 20);
   ASSERT_EQ(result["value"]["p2"]["x"], 30);
   ASSERT_EQ(result["value"]["p2"]["y"], 40);
+}
+
+TEST_F(ExecutorTest, CallbackFunction)
+{
+    // 1. Register a callback signature
+    std::string callback_id = callback_manager.registerCallback("void", {"string", "int32"});
+    ASSERT_FALSE(callback_id.empty());
+
+    // 2. Prepare to call the C function that expects a callback
+    const char* test_message = "Hello from C++ unit test!";
+    json payload = {
+        {"library_id", test_lib_id},
+        {"function_name", "call_my_callback"},
+        {"return_type", "void"},
+        {"args", {
+            {
+                {"type", "callback"},
+                {"value", callback_id}
+            },
+            {
+                {"type", "string"},
+                {"value", test_message}
+            }
+        }}
+    };
+
+    // 3. Call the function
+    ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "call_my_callback"), payload);
+
+    // 4. Verify that the dummy connection received the event
+    ASSERT_FALSE(dummy_connection.last_event.is_null());
+    ASSERT_EQ(dummy_connection.last_event["event"], "invoke_callback");
+
+    const auto& event_payload = dummy_connection.last_event["payload"];
+    ASSERT_EQ(event_payload["callback_id"], callback_id);
+    
+    const auto& event_args = event_payload["args"];
+    ASSERT_EQ(event_args.size(), 2);
+    ASSERT_EQ(event_args[0]["type"], "string");
+    ASSERT_EQ(event_args[0]["value"], test_message);
+    ASSERT_EQ(event_args[1]["type"], "int32");
+    ASSERT_EQ(event_args[1]["value"], 123);
 }
