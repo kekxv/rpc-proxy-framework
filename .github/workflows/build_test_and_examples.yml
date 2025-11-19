@@ -46,7 +46,7 @@ jobs:
       run: |
         build/executor --pipe my_pipe & 
         EXECUTOR_PID=$!
-        sleep 2
+        sleep 3
         java -jar examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
         kill $EXECUTOR_PID
         rm /tmp/my_pipe # Clean up Unix domain socket
