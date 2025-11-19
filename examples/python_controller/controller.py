@@ -396,9 +396,20 @@ def test_callback_functionality(client, library_id):
   assert response["status"] == "success", f"Failed to call 'call_my_callback': {response.get('error_message')}"
   print(f"{Colors.GREEN}call_my_callback returned successfully, expecting one event...{Colors.RESET}")
 
-  # The event will be processed by the receiver thread and put into client.event_queue
-  # We don't need to explicitly wait here, as the test setup will eventually check the queue.
-  # For a single event, the general event processing should handle it.
+  # Explicitly retrieve the event for this test to ensure it's processed
+  try:
+    event = client.event_queue.get(timeout=5)
+    assert event["event"] == "invoke_callback", f"Expected invoke_callback event, got {event['event']}"
+    assert event["payload"]["callback_id"] == callback_id, f"Expected callback_id {callback_id}, got {event['payload']['callback_id']}"
+    print(f"{Colors.GREEN}Successfully received and verified the single invoke_callback event.{Colors.RESET}")
+  except queue.Empty:
+    raise TimeoutError("Did not receive invoke_callback event within timeout in single callback test.")
+
+  # Clear any remaining events that might have buffered up unexpectedly
+  while not client.event_queue.empty():
+      client.event_queue.get_nowait()
+      print(f"{Colors.YELLOW}Warning: Cleared unexpected event from queue.{Colors.RESET}")
+
 
   print(f"{Colors.BLUE}Unregistering callback: {callback_id}{Colors.RESET}")
   response = client.unregister_callback(callback_id)

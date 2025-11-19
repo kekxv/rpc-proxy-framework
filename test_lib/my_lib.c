@@ -76,6 +76,23 @@ DLLEXPORT void call_my_callback(void (*callback_fn)(const char* message, int val
     }
 }
 
+// New function to demonstrate multiple callbacks
+// The callback function is expected to have the signature: void (*callback_fn)(const char* message, int value)
+DLLEXPORT void call_multi_callbacks(void (*callback_fn)(const char* message, int value), int count) {
+    if (!callback_fn) {
+        printf("Callback function is NULL for multi-callbacks.\n");
+        return;
+    }
+    printf("Native code starting multi-callbacks, count: %d\n", count);
+    for (int i = 0; i < count; ++i) {
+        char message[256];
+        snprintf(message, sizeof(message), "Message from native code, call %d", i + 1);
+        printf("  Calling back with message: %s, value: %d\n", message, i + 1);
+        callback_fn(message, i + 1);
+    }
+    printf("Native code finished multi-callbacks.\n");
+}
+
 // New function to demonstrate writing to an output buffer
 // buff: output buffer, size: input buffer capacity, output actual size written
 // buff: output buffer, size: input buffer capacity, output actual size written
