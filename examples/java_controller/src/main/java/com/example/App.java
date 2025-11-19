@@ -29,7 +29,8 @@ class RpcClient implements AutoCloseable {
     private final ConcurrentMap<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
     private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
 
-    private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.BIG_ENDIAN;
+    private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.LITTLE_ENDIAN;
+//     private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.BIG_ENDIAN;
 
     public RpcClient(String pipeName) {
         this.socketPath = "/tmp/" + pipeName;
