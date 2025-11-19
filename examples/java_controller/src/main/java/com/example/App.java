@@ -78,10 +78,11 @@ class RpcClient implements AutoCloseable {
                 in.readFully(lenBytes);
 
                 ByteBuffer receivedLengthBuffer = ByteBuffer.wrap(lenBytes);
+                System.out.println("[Receiver] Got message length: " + receivedLengthBuffer.getInt()); // 调试用
                 receivedLengthBuffer.order(IPC_BYTE_ORDER);
                 int responseLength = receivedLengthBuffer.getInt();
 
-                // System.out.println("[Receiver] Got message length: " + responseLength); // 调试用
+                System.out.println("[Receiver] Got message length: " + responseLength); // 调试用
 
                 byte[] responseBytes = new byte[responseLength];
                 in.readFully(responseBytes);
