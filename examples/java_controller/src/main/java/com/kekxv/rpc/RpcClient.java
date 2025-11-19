@@ -1,4 +1,4 @@
-package com.example.rpc;
+package com.kekxv.rpc;
 
 import org.json.JSONObject;
 // 如果只在 Windows 运行且不想引入 jar 包，可以注释掉下面这两行 junixsocket 的引用

@@ -1,6 +1,6 @@
-package com.example;
+package com.kekxv;
 
-import com.example.rpc.RpcClient;
+import com.kekxv.rpc.RpcClient;
 import org.json.JSONArray;
 import org.json.JSONObject;
 

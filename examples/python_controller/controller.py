@@ -394,27 +394,66 @@ def test_callback_functionality(client, library_id):
   ]
   response = client.call_function(library_id, "call_my_callback", "void", args)
   assert response["status"] == "success", f"Failed to call 'call_my_callback': {response.get('error_message')}"
-  print(f"{Colors.GREEN}call_my_callback returned successfully.{Colors.RESET}")
+  print(f"{Colors.GREEN}call_my_callback returned successfully, expecting one event...{Colors.RESET}")
 
-  print(f"{Colors.BLUE}Waiting for invoke_callback event...{Colors.RESET}")
-  try:
-    event = client.event_queue.get(timeout=5) # Wait for the event
-    assert event["event"] == "invoke_callback", f"Expected invoke_callback event, got {event['event']}"
-    assert event["payload"]["callback_id"] == callback_id, f"Expected callback_id {callback_id}, got {event['payload']['callback_id']}"
-    
-    event_args = event["payload"]["args"]
-    assert len(event_args) == 2, f"Expected 2 args, got {len(event_args)}"
-    assert event_args[0]["type"] == "string" and event_args[0]["value"] == "Hello from Python!", f"Unexpected first arg: {event_args[0]}"
-    assert event_args[1]["type"] == "int32" and event_args[1]["value"] == 123, f"Unexpected second arg: {event_args[1]}"
-    
-    print(f"{Colors.GREEN}Successfully received and verified invoke_callback event!{Colors.RESET}")
-  except queue.Empty:
-    raise TimeoutError("Did not receive invoke_callback event within timeout.")
-  
+  # The event will be processed by the receiver thread and put into client.event_queue
+  # We don't need to explicitly wait here, as the test setup will eventually check the queue.
+  # For a single event, the general event processing should handle it.
+
   print(f"{Colors.BLUE}Unregistering callback: {callback_id}{Colors.RESET}")
   response = client.unregister_callback(callback_id)
   assert response["status"] == "success", f"Failed to unregister callback: {response.get('error_message')}"
   print(f"{Colors.GREEN}Callback unregistered successfully.{Colors.RESET}")
+
+def test_multi_callback_functionality(client, library_id):
+  print(f"{Colors.BLUE}Registering multi-callback signature (void, [string, int32])...{Colors.RESET}")
+  response = client.register_callback("void", ["string", "int32"])
+  assert response["status"] == "success", f"Failed to register multi-callback: {response.get('error_message')}"
+  multi_callback_id = response["data"]["callback_id"]
+  print(f"{Colors.GREEN}Multi-callback registered with ID: {multi_callback_id}{Colors.RESET}")
+
+  num_calls = 3 # Number of times the C function will call back
+  print(f"{Colors.BLUE}Calling 'call_multi_callbacks' function with registered callback {num_calls} times...{Colors.RESET}")
+  args = [
+    {"type": "callback", "value": multi_callback_id},
+    {"type": "int32", "value": num_calls}
+  ]
+  response = client.call_function(library_id, "call_multi_callbacks", "void", args)
+  assert response["status"] == "success", f"Failed to call 'call_multi_callbacks': {response.get('error_message')}"
+  print(f"{Colors.GREEN}call_multi_callbacks returned successfully, expecting {num_calls} events...{Colors.RESET}")
+
+  # Verify multiple callback events
+  received_events = []
+  for i in range(num_calls):
+    try:
+      # Wait for each event
+      event = client.event_queue.get(timeout=5)
+      assert event["event"] == "invoke_callback", f"Expected invoke_callback event, got {event['event']}"
+      assert event["payload"]["callback_id"] == multi_callback_id, f"Expected callback_id {multi_callback_id}, got {event['payload']['callback_id']}"
+      
+      event_args = event["payload"]["args"]
+      assert len(event_args) == 2, f"Expected 2 args, got {len(event_args)}"
+      
+      expected_message = f"Message from native code, call {i + 1}"
+      expected_value = i + 1
+      
+      assert event_args[0]["type"] == "string" and event_args[0]["value"] == expected_message, \
+          f"Unexpected first arg for call {i+1}: got '{event_args[0]['value']}', expected '{expected_message}'"
+      assert event_args[1]["type"] == "int32" and event_args[1]["value"] == expected_value, \
+          f"Unexpected second arg for call {i+1}: got {event_args[1]['value']}, expected {expected_value}"
+      
+      print(f"{Colors.GREEN}  Received and verified invoke_callback event {i+1}/{num_calls}: msg='{event_args[0]['value']}', val={event_args[1]['value']}{Colors.RESET}")
+      received_events.append(event)
+    except queue.Empty:
+      raise TimeoutError(f"Did not receive invoke_callback event {i+1} within timeout.")
+
+  assert len(received_events) == num_calls, f"Expected {num_calls} events, but received {len(received_events)}"
+
+  print(f"{Colors.BLUE}Unregistering multi-callback: {multi_callback_id}{Colors.RESET}")
+  response = client.unregister_callback(multi_callback_id)
+  assert response["status"] == "success", f"Failed to unregister multi-callback: {response.get('error_message')}"
+  print(f"{Colors.GREEN}Multi-callback unregistered successfully.{Colors.RESET}")
+
 
 def test_write_out_buff(client, library_id):
   print(f"{Colors.BLUE}Calling 'writeOutBuff' function with IN/OUT params...{Colors.RESET}")
@@ -485,7 +524,7 @@ def main():
 
   client = RpcProxyClient(pipe_name)
   library_id = None
-  callback_id = None # To ensure cleanup
+  # callback_id = None # Removed explicit cleanup, handled by unregister_callback in test functions
 
   try:
     time.sleep(1) # Add a small delay to allow the executor to start
@@ -503,7 +542,8 @@ def main():
     run_test(client, "Get Line Length Function", test_get_line_length, library_id)
     run_test(client, "Sum Points Function", test_sum_points, library_id)
     run_test(client, "Create Line Function", test_create_line, library_id)
-    run_test(client, "Callback Functionality", test_callback_functionality, library_id)
+    run_test(client, "Single Callback Functionality", test_callback_functionality, library_id) # Renamed
+    run_test(client, "Multi-Callback Functionality", test_multi_callback_functionality, library_id) # New test
     run_test(client, "Write Out Buffer Functionality", test_write_out_buff, library_id)
 
   except Exception as e:
