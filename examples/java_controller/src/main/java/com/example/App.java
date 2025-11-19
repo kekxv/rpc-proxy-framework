@@ -83,7 +83,7 @@ public class App {
             System.out.println("Calling function 'add' with args (10, 20)");
             JSONObject addResponse = sendAndReceive(out, in, addRequest);
             System.out.println("Response: " + addResponse);
-            System.out.println("Result of add(10, 20) is: " + addResponse.getJSONObject("data").getInt("value"));
+            System.out.println("Result of add(10, 20) is: " + addResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
 
             // 4. Call function 'greet'
             JSONObject greetRequest = new JSONObject();
@@ -100,7 +100,7 @@ public class App {
             System.out.println("Calling function 'greet' with arg ('Java World')");
             JSONObject greetResponse = sendAndReceive(out, in, greetRequest);
             System.out.println("Response: " + greetResponse);
-            System.out.println("Result of greet('Java World') is: '" + greetResponse.getJSONObject("data").getString("value") + "'");
+            System.out.println("Result of greet('Java World') is: '" + greetResponse.getJSONObject("data").getJSONObject("return").getString("value") + "'");
 
             // 5. Call function 'process_point_by_val'
             JSONObject processPointByValRequest = new JSONObject();
@@ -118,7 +118,7 @@ public class App {
             System.out.println("Calling function 'process_point_by_val' with args (Point {x=10, y=20})");
             JSONObject processPointByValResponse = sendAndReceive(out, in, processPointByValRequest);
             System.out.println("Response: " + processPointByValResponse);
-            System.out.println("Result of process_point_by_val is: " + processPointByValResponse.getJSONObject("data").getInt("value"));
+            System.out.println("Result of process_point_by_val is: " + processPointByValResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
 
             // 6. Call function 'process_point_by_ptr'
             JSONObject processPointByPtrRequest = new JSONObject();
@@ -137,7 +137,7 @@ public class App {
             System.out.println("Calling function 'process_point_by_ptr' with args (Point {x=5, y=6})");
             JSONObject processPointByPtrResponse = sendAndReceive(out, in, processPointByPtrRequest);
             System.out.println("Response: " + processPointByPtrResponse);
-            System.out.println("Result of process_point_by_ptr is: " + processPointByPtrResponse.getJSONObject("data").getInt("value"));
+            System.out.println("Result of process_point_by_ptr is: " + processPointByPtrResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
 
             // 7. Call function 'create_point'
             JSONObject createPointRequest = new JSONObject();
@@ -155,7 +155,7 @@ public class App {
             System.out.println("Calling function 'create_point' with args (100, 200)");
             JSONObject createPointResponse = sendAndReceive(out, in, createPointRequest);
             System.out.println("Response: " + createPointResponse);
-            System.out.println("Result of create_point is: " + createPointResponse.getJSONObject("data").getJSONObject("value"));
+            System.out.println("Result of create_point is: " + createPointResponse.getJSONObject("data").getJSONObject("return").getJSONObject("value"));
 
 
         } catch (IOException e) {

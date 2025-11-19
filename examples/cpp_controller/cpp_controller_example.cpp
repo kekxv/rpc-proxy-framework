@@ -182,7 +182,7 @@ int main(int argc, char* argv[]) {
         if (add_response["status"] == "error") {
             throw std::runtime_error("Failed to call 'add': " + add_response["error_message"].get<std::string>());
         }
-        std::cout << "Result of add(10, 20) is: " << add_response["data"]["value"].get<int>() << std::endl;
+        std::cout << "Result of add(10, 20) is: " << add_response["data"]["return"]["value"].get<int>() << std::endl;
 
         // 4. Call function 'greet'
         json greet_request = {
@@ -209,7 +209,7 @@ int main(int argc, char* argv[]) {
         if (greet_response["status"] == "error") {
             throw std::runtime_error("Failed to call 'greet': " + greet_response["error_message"].get<std::string>());
         }
-        std::cout << "Result of greet('C++ World') is: '" << greet_response["data"]["value"].get<std::string>() << "'" << std::endl;
+        std::cout << "Result of greet('C++ World') is: '" << greet_response["data"]["return"]["value"].get<std::string>() << "'" << std::endl;
 
         // 5. Call function 'process_point_by_val'
         json process_point_by_val_request = {
@@ -236,7 +236,7 @@ int main(int argc, char* argv[]) {
         if (process_point_by_val_response["status"] == "error") {
             throw std::runtime_error("Failed to call 'process_point_by_val': " + process_point_by_val_response["error_message"].get<std::string>());
         }
-        std::cout << "Result of process_point_by_val is: " << process_point_by_val_response["data"]["value"].get<int>() << std::endl;
+        std::cout << "Result of process_point_by_val is: " << process_point_by_val_response["data"]["return"]["value"].get<int>() << std::endl;
 
         // 6. Call function 'process_point_by_ptr'
         json process_point_by_ptr_request = {
@@ -263,7 +263,7 @@ int main(int argc, char* argv[]) {
         if (process_point_by_ptr_response["status"] == "error") {
             throw std::runtime_error("Failed to call 'process_point_by_ptr': " + process_point_by_ptr_response["error_message"].get<std::string>());
         }
-        std::cout << "Result of process_point_by_ptr is: " << process_point_by_ptr_response["data"]["value"].get<int>() << std::endl;
+        std::cout << "Result of process_point_by_ptr is: " << process_point_by_ptr_response["data"]["return"]["value"].get<int>() << std::endl;
 
         // 7. Call function 'create_point'
         json create_point_request = {
@@ -291,7 +291,7 @@ int main(int argc, char* argv[]) {
         if (create_point_response["status"] == "error") {
             throw std::runtime_error("Failed to call 'create_point': " + create_point_response["error_message"].get<std::string>());
         }
-        std::cout << "Result of create_point is: " << create_point_response["data"]["value"].dump() << std::endl;
+        std::cout << "Result of create_point is: " << create_point_response["data"]["return"]["value"].dump() << std::endl;
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
