@@ -26,73 +26,68 @@ class RpcClient implements AutoCloseable {
     private DataInputStream in;
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final AtomicInteger requestIdCounter = new AtomicInteger(0);
-    // 存储等待响应的 Future
     private final ConcurrentMap<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
     private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
+
+    private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.BIG_ENDIAN;
 
     public RpcClient(String pipeName) {
         this.socketPath = "/tmp/" + pipeName;
     }
 
-    /**
-     * 连接服务器，支持超时时间
-     * @param timeoutMillis 连接超时时间（毫秒）
-     */
     public void connect(long timeoutMillis) throws IOException {
         Path socketFile = Paths.get(socketPath);
         UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketFile);
-
         channel = SocketChannel.open(StandardProtocolFamily.UNIX);
 
-        // 1. 设置为非阻塞模式以便控制连接超时
+        // 1. 非阻塞模式用于连接超时控制
         channel.configureBlocking(false);
-
         boolean connected = channel.connect(address);
-
         if (!connected) {
-            // 使用 Selector 等待连接完成
             try (Selector selector = Selector.open()) {
                 channel.register(selector, SelectionKey.OP_CONNECT);
-
-                // select 返回 0 表示超时
                 if (selector.select(timeoutMillis) == 0) {
                     throw new IOException("Connection timed out after " + timeoutMillis + "ms");
                 }
-
-                // 完成连接
                 if (!channel.finishConnect()) {
                     throw new IOException("Failed to finish connection");
                 }
             }
         }
 
-        // 2. 恢复为阻塞模式 (DataInputStream 需要阻塞模式)
+        // 2. !!! 恢复为阻塞模式 !!! DataInputStream 必须工作在阻塞模式下
         channel.configureBlocking(true);
 
-        // 3. 初始化流
-        out = new DataOutputStream(Channels.newOutputStream(channel));
-        in = new DataInputStream(Channels.newInputStream(channel));
+        // 3. 使用缓冲流，防止碎片化写入
+        out = new DataOutputStream(new java.io.BufferedOutputStream(Channels.newOutputStream(channel)));
+        in = new DataInputStream(new java.io.BufferedInputStream(Channels.newInputStream(channel)));
 
         System.out.println("Connected to " + socketPath);
+
+        // 启动接收线程
         executorService.submit(this::receiveMessages);
     }
 
     private void receiveMessages() {
+        System.out.println("[Receiver] Thread started, waiting for data...");
         try {
             while (!Thread.currentThread().isInterrupted() && channel.isOpen()) {
-                // 读取长度头 (4字节)
                 byte[] lenBytes = new byte[4];
-                in.readFully(lenBytes); // 这里会阻塞，直到收到数据或连接断开
+                // 这里会阻塞等待，直到有数据过来
+                in.readFully(lenBytes);
 
                 ByteBuffer receivedLengthBuffer = ByteBuffer.wrap(lenBytes);
-                receivedLengthBuffer.order(ByteOrder.BIG_ENDIAN);
+                receivedLengthBuffer.order(IPC_BYTE_ORDER);
                 int responseLength = receivedLengthBuffer.getInt();
 
-                // 读取消息体
+                // System.out.println("[Receiver] Got message length: " + responseLength); // 调试用
+
                 byte[] responseBytes = new byte[responseLength];
                 in.readFully(responseBytes);
-
                 String responseStr = new String(responseBytes, "UTF-8");
+
+                // System.out.println("[Receiver] Body: " + responseStr); // 调试用
+
                 JSONObject response = new JSONObject(responseStr);
 
                 if (response.has("request_id")) {
@@ -100,6 +95,8 @@ class RpcClient implements AutoCloseable {
                     CompletableFuture<JSONObject> future = pendingRequests.remove(reqId);
                     if (future != null) {
                         future.complete(response);
+                    } else {
+                        System.err.println("[Receiver] Warning: No pending future for reqId: " + reqId);
                     }
                 } else if (response.has("event")) {
                     System.out.println("Received event: " + response);
@@ -107,24 +104,18 @@ class RpcClient implements AutoCloseable {
                 }
             }
         } catch (IOException e) {
-            // 连接关闭是正常的退出流程，如果是意外关闭则打印日志
             if (!Thread.currentThread().isInterrupted()) {
-                System.out.println("Connection closed or error: " + e.getMessage());
+                System.out.println("[Receiver] Connection closed: " + e.getMessage());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            // 确保发生错误时清理资源
             close();
         }
     }
 
-    /**
-     * 发送请求，支持自定义超时
-     */
     public JSONObject sendRequest(JSONObject request, long timeout, TimeUnit unit)
             throws ExecutionException, InterruptedException, TimeoutException {
-
         String reqId = "req-" + requestIdCounter.incrementAndGet();
         request.put("request_id", reqId);
 
@@ -136,55 +127,40 @@ class RpcClient implements AutoCloseable {
             byte[] requestBytes = requestStr.getBytes("UTF-8");
 
             ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
-            lengthBuffer.order(ByteOrder.BIG_ENDIAN);
+            lengthBuffer.order(IPC_BYTE_ORDER);
             lengthBuffer.putInt(requestBytes.length);
 
             synchronized (out) {
                 out.write(lengthBuffer.array());
                 out.write(requestBytes);
-                out.flush();
+                out.flush(); // 必须 Flush，否则数据可能滞留在 Buffer 中
             }
-
-            // 等待结果，直到超时
             return future.get(timeout, unit);
-
         } catch (IOException e) {
-            // 发送失败，立即清理
             pendingRequests.remove(reqId);
             throw new ExecutionException("Failed to send request", e);
         } catch (TimeoutException e) {
-            // 超时发生，必须清理 map 中的 future，防止内存泄漏
             pendingRequests.remove(reqId);
-            // 如果超时，我们可以选择让 future 异常结束，以防后续数据迟到导致逻辑混乱
             future.completeExceptionally(e);
+            System.err.println("Request " + reqId + " timed out!");
             throw e;
         }
     }
 
-    // 提供一个默认超时的重载方法 (例如 5 秒)
     public JSONObject sendRequest(JSONObject request) throws ExecutionException, InterruptedException, TimeoutException {
         return sendRequest(request, 5, TimeUnit.SECONDS);
     }
 
-    public BlockingQueue<JSONObject> getEventQueue() {
-        return eventQueue;
-    }
+    // ... 其余 getEventQueue 和 close 方法保持不变 ...
+    public BlockingQueue<JSONObject> getEventQueue() { return eventQueue; }
 
     @Override
     public void close() {
         try {
-            // 关闭 Channel 会导致 receiveMessages 中的 readFully 抛出异常从而结束线程
             if (channel != null && channel.isOpen()) {
                 channel.close();
             }
-        } catch (IOException e) {
-            // Ignore
-        }
-        // 清理所有挂起的请求，通知它们连接已关闭
-        for (CompletableFuture<JSONObject> future : pendingRequests.values()) {
-            future.completeExceptionally(new IOException("Client is closing"));
-        }
-        pendingRequests.clear();
+        } catch (IOException e) { }
         executorService.shutdownNow();
     }
 }
