@@ -61,20 +61,26 @@ protected:
     };
     struct_manager.register_struct("Line", line_def);
 
-    // Load the test library
+    // Load the test library. The path is relative to the project root,
+    // where the test executable is run from.
 #ifdef _WIN32
 #ifdef CMAKE_BUILD_TYPE
-    std::string lib_path = "../../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll"; // Adjust path as necessary
+    std::string lib_path = "../../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
 #else
-    std::string lib_path = "../test_lib/my_lib.dll"; // Adjust path as necessary
+    std::string lib_path = "../test_lib/my_lib.dll";
 #endif
 #elif defined(__linux__)
-    std::string lib_path = "../test_lib/my_lib.so"; // Adjust path as necessary
+    std::string lib_path = "../test_lib/my_lib.so";
 #else
-    std::string lib_path = "../test_lib/my_lib.dylib"; // Adjust path as necessary
+    std::string lib_path = "../test_lib/my_lib.dylib";
 #endif
     test_lib_id = lib_manager.load_library(lib_path);
-    ASSERT_FALSE(test_lib_id.empty());
+    if (test_lib_id.empty()) {
+        // Fallback for different build configurations if needed
+        lib_path = "cmake-build-debug/test_lib/my_lib.dylib";
+        test_lib_id = lib_manager.load_library(lib_path);
+    }
+    ASSERT_FALSE(test_lib_id.empty()) << "Failed to load library from: " << lib_path;
   }
 
   void TearDown() override
@@ -100,9 +106,8 @@ TEST_F(ExecutorTest, BasicAddFunction)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "add"), payload);
-  // FfiDispatcher directly returns the result, not a status wrapper
-  ASSERT_EQ(result["type"], "int32");
-  ASSERT_EQ(result["value"], 30);
+  ASSERT_EQ(result["return"]["type"], "int32");
+  ASSERT_EQ(result["return"]["value"], 30);
 }
 
 TEST_F(ExecutorTest, GreetFunction)
@@ -118,8 +123,8 @@ TEST_F(ExecutorTest, GreetFunction)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "greet"), payload);
-  ASSERT_EQ(result["type"], "string");
-  ASSERT_EQ(result["value"], "Hello, World");
+  ASSERT_EQ(result["return"]["type"], "string");
+  ASSERT_EQ(result["return"]["value"], "Hello, World");
 }
 
 TEST_F(ExecutorTest, ProcessPointByVal)
@@ -135,8 +140,8 @@ TEST_F(ExecutorTest, ProcessPointByVal)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_val"), payload);
-  ASSERT_EQ(result["type"], "int32");
-  ASSERT_EQ(result["value"], 30);
+  ASSERT_EQ(result["return"]["type"], "int32");
+  ASSERT_EQ(result["return"]["value"], 30);
 }
 
 TEST_F(ExecutorTest, ProcessPointByPtr)
@@ -156,8 +161,8 @@ TEST_F(ExecutorTest, ProcessPointByPtr)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_ptr"), payload);
-  ASSERT_EQ(result["type"], "int32");
-  ASSERT_EQ(result["value"], 11);
+  ASSERT_EQ(result["return"]["type"], "int32");
+  ASSERT_EQ(result["return"]["value"], 11);
 }
 
 TEST_F(ExecutorTest, CreatePoint)
@@ -174,9 +179,9 @@ TEST_F(ExecutorTest, CreatePoint)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_point"), payload);
-  ASSERT_EQ(result["type"], "Point");
-  ASSERT_EQ(result["value"]["x"], 100);
-  ASSERT_EQ(result["value"]["y"], 200);
+  ASSERT_EQ(result["return"]["type"], "Point");
+  ASSERT_EQ(result["return"]["value"]["x"], 100);
+  ASSERT_EQ(result["return"]["value"]["y"], 200);
 }
 
 TEST_F(ExecutorTest, GetLineLength)
@@ -199,8 +204,8 @@ TEST_F(ExecutorTest, GetLineLength)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "get_line_length"), payload);
-  ASSERT_EQ(result["type"], "int32");
-  ASSERT_EQ(result["value"], 10); // 1+2+3+4 = 10
+  ASSERT_EQ(result["return"]["type"], "int32");
+  ASSERT_EQ(result["return"]["value"], 10); // 1+2+3+4 = 10
 }
 
 TEST_F(ExecutorTest, SumPoints)
@@ -210,11 +215,6 @@ TEST_F(ExecutorTest, SumPoints)
     int32_t x;
     int32_t y;
   } Point;
-  // Prepare an array of Point structs in memory
-  // This part is tricky as FfiDispatcher expects a pointer to already allocated memory for arrays.
-  // For testing purposes, we can simulate this by creating a temporary array.
-  // In a real scenario, the controller would manage this memory and pass the pointer.
-  // For this test, we'll create a small array of Points and pass its address.
   Point points_array[] = {{1, 1}, {2, 2}, {3, 3}};
   int count = sizeof(points_array) / sizeof(Point);
 
@@ -240,8 +240,8 @@ TEST_F(ExecutorTest, SumPoints)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "sum_points"), payload);
-  ASSERT_EQ(result["type"], "int32");
-  ASSERT_EQ(result["value"], 12); // (1+1) + (2+2) + (3+3) = 2 + 4 + 6 = 12
+  ASSERT_EQ(result["return"]["type"], "int32");
+  ASSERT_EQ(result["return"]["value"], 12); // (1+1) + (2+2) + (3+3) = 2 + 4 + 6 = 12
 }
 
 TEST_F(ExecutorTest, CreateLine)
@@ -260,11 +260,11 @@ TEST_F(ExecutorTest, CreateLine)
     }
   };
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_line"), payload);
-  ASSERT_EQ(result["type"], "Line");
-  ASSERT_EQ(result["value"]["p1"]["x"], 10);
-  ASSERT_EQ(result["value"]["p1"]["y"], 20);
-  ASSERT_EQ(result["value"]["p2"]["x"], 30);
-  ASSERT_EQ(result["value"]["p2"]["y"], 40);
+  ASSERT_EQ(result["return"]["type"], "Line");
+  ASSERT_EQ(result["return"]["value"]["p1"]["x"], 10);
+  ASSERT_EQ(result["return"]["value"]["p1"]["y"], 20);
+  ASSERT_EQ(result["return"]["value"]["p2"]["x"], 30);
+  ASSERT_EQ(result["return"]["value"]["p2"]["y"], 40);
 }
 
 TEST_F(ExecutorTest, CallbackFunction)
@@ -307,4 +307,58 @@ TEST_F(ExecutorTest, CallbackFunction)
     ASSERT_EQ(event_args[0]["value"], test_message);
     ASSERT_EQ(event_args[1]["type"], "int32");
     ASSERT_EQ(event_args[1]["value"], 123);
+}
+
+TEST_F(ExecutorTest, WriteOutBuffFunction)
+{
+    const int buffer_capacity = 64;
+    json payload = {
+        {"library_id", test_lib_id},
+        {"function_name", "writeOutBuff"},
+        {"return_type", "int32"},
+        {"args", {
+            {
+                {"type", "buffer"},
+                {"direction", "out"},
+                {"size", buffer_capacity}
+            },
+            {
+                {"type", "pointer"},
+                {"target_type", "int32"},
+                {"direction", "inout"},
+                {"value", buffer_capacity}
+            }
+        }}
+    };
+
+    json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "writeOutBuff"), payload);
+
+    // 1. Check direct return value
+    ASSERT_EQ(result["return"]["type"], "int32");
+    ASSERT_EQ(result["return"]["value"], 0); // Success code
+
+    // 2. Check out_params
+    const auto& out_params = result["out_params"];
+    ASSERT_EQ(out_params.size(), 2);
+
+    // Find the params by index, as order is not guaranteed
+    json buffer_param;
+    json size_param;
+    for(const auto& param : out_params) {
+        if (param["index"] == 0) {
+            buffer_param = param;
+        } else if (param["index"] == 1) {
+            size_param = param;
+        }
+    }
+
+    ASSERT_FALSE(buffer_param.is_null());
+    ASSERT_FALSE(size_param.is_null());
+
+    const std::string expected_string = "Hello from writeOutBuff!";
+    ASSERT_EQ(buffer_param["type"], "string");
+    ASSERT_EQ(buffer_param["value"], expected_string);
+
+    ASSERT_EQ(size_param["type"], "int32");
+    ASSERT_EQ(size_param["value"], expected_string.length());
 }
