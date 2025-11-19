@@ -3,6 +3,7 @@
 #include "ffi_dispatcher.h"
 #include "lib_manager.h"
 #include "callback_manager.h" // Include CallbackManager
+#include "ipc_server.h"       // For ClientConnection base class
 #include <memory>
 #include <iostream>
 
@@ -12,19 +13,31 @@ int add(int a, int b);
 char* greet(char* name);
 }
 
+// Dummy ClientConnection for testing CallbackManager in isolation
+class DummyClientConnection : public ClientConnection {
+public:
+    std::string read() override { return ""; } // No-op
+    bool write(const std::string& message) override { return true; } // No-op
+    bool sendEvent(const nlohmann::json& event_json) override {
+        std::cout << "DummyClientConnection received event: " << event_json.dump() << std::endl;
+        return true;
+    }
+    bool isOpen() override { return true; } // Always open for test purposes
+};
+
 class ExecutorTest : public ::testing::Test
 {
 protected:
   StructManager struct_manager;
-  // For FfiDispatcher tests, we don't need a real connection, so we pass nullptr.
-  // This means any test that actually triggers a callback would fail, but none of these do.
+  DummyClientConnection dummy_connection; // Dummy connection for CallbackManager
   CallbackManager callback_manager;
   FfiDispatcher ffi_dispatcher;
   LibManager lib_manager;
 
   ExecutorTest() : 
     struct_manager(),
-    callback_manager(nullptr, &struct_manager), // Pass nullptr for ClientConnection
+    dummy_connection(),
+    callback_manager(&dummy_connection, &struct_manager), // Pass dummy connection
     ffi_dispatcher(struct_manager, &callback_manager) // Pass CallbackManager to FfiDispatcher
   {
   }
