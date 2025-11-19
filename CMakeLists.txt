@@ -59,8 +59,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(gsl-lite)
 
-# --- 添加 UUID 库 (stduuid) ---
-set(UUID_SYSTEM_GENERATOR ON) # 启用系统 UUID 生成器
 FetchContent_Declare(
     stduuid
     GIT_REPOSITORY https://github.com/mariusbancila/stduuid.git
@@ -119,8 +117,6 @@ if (WIN32)
             COMMENT "Copying executable to bin directory..."
     )
 endif ()
-add_definitions(-DUUID_SYSTEM_GENERATOR)
-
 # --- 定义可执行文件 ---
 add_executable(executor
         src/main.cpp
