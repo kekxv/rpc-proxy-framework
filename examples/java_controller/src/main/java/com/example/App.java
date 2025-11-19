@@ -6,187 +6,306 @@ import org.json.JSONObject;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.net.Socket;
+import java.net.StandardProtocolFamily;
+import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
+import java.nio.channels.SocketChannel;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.net.UnixDomainSocketAddress;
-import java.nio.channels.SocketChannel;
-import java.net.StandardProtocolFamily;
-import java.nio.channels.Channels;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class RpcClient implements AutoCloseable {
+    private final String socketPath;
+    private SocketChannel channel;
+    private DataOutputStream out;
+    private DataInputStream in;
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+    private final AtomicInteger requestIdCounter = new AtomicInteger(0);
+    private final ConcurrentMap<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
+    private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
+
+    public RpcClient(String pipeName) {
+        this.socketPath = "/tmp/" + pipeName;
+    }
+
+    public void connect() throws IOException {
+        Path socketFile = Paths.get(socketPath);
+        UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketFile);
+        channel = SocketChannel.open(StandardProtocolFamily.UNIX);
+        channel.connect(address);
+        out = new DataOutputStream(Channels.newOutputStream(channel));
+        in = new DataInputStream(Channels.newInputStream(channel));
+        System.out.println("Connected to " + socketPath);
+        executorService.submit(this::receiveMessages);
+    }
+
+    private void receiveMessages() {
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                byte[] lenBytes = new byte[4];
+                in.readFully(lenBytes);
+                ByteBuffer receivedLengthBuffer = ByteBuffer.wrap(lenBytes);
+                receivedLengthBuffer.order(ByteOrder.BIG_ENDIAN);
+                int responseLength = receivedLengthBuffer.getInt();
+
+                byte[] responseBytes = new byte[responseLength];
+                in.readFully(responseBytes);
+                String responseStr = new String(responseBytes, "UTF-8");
+                JSONObject response = new JSONObject(responseStr);
+
+                if (response.has("request_id")) {
+                    String reqId = response.getString("request_id");
+                    CompletableFuture<JSONObject> future = pendingRequests.remove(reqId);
+                    if (future != null) {
+                        future.complete(response);
+                    }
+                } else if (response.has("event")) {
+                    System.out.println("Received event: " + response);
+                    eventQueue.put(response);
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Connection closed or error: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            close();
+        }
+    }
+
+    public JSONObject sendRequest(JSONObject request) throws ExecutionException, InterruptedException, TimeoutException {
+        String reqId = "req-" + requestIdCounter.incrementAndGet();
+        request.put("request_id", reqId);
+
+        CompletableFuture<JSONObject> future = new CompletableFuture<>();
+        pendingRequests.put(reqId, future);
+
+        try {
+            String requestStr = request.toString();
+            byte[] requestBytes = requestStr.getBytes("UTF-8");
+            ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
+            lengthBuffer.order(ByteOrder.BIG_ENDIAN);
+            lengthBuffer.putInt(requestBytes.length);
+            synchronized (out) {
+                out.write(lengthBuffer.array());
+                out.write(requestBytes);
+                out.flush();
+            }
+        } catch (IOException e) {
+            pendingRequests.remove(reqId);
+            future.completeExceptionally(e);
+        }
+        return future.get(10, TimeUnit.SECONDS);
+    }
+    
+    public BlockingQueue<JSONObject> getEventQueue() {
+        return eventQueue;
+    }
+
+    @Override
+    public void close() {
+        try {
+            if (channel != null && channel.isOpen()) {
+                channel.close();
+            }
+        } catch (IOException e) {
+            // Ignore
+        }
+        executorService.shutdownNow();
+    }
+}
 
 public class App {
+    private static final String LIBRARY_PATH = Paths.get("build", "test_lib", System.mapLibraryName("my_lib").replace("libmy_lib", "my_lib")).toAbsolutePath().toString();
 
-    // Adjust LIBRARY_PATH to be relative to the java_controller directory
-    private static final String LIBRARY_PATH = Paths.get( "build", "test_lib",System.mapLibraryName("my_lib").replace("libmy_lib","my_lib")).toAbsolutePath().toString();
-
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         if (args.length < 1) {
             System.err.println("Usage: java -jar java-controller.jar <pipe_name>");
             return;
         }
-        String pipeName = args[0];
-        String socketPath = "/tmp/" + pipeName; // For Unix-like systems
 
-        try {
-            // For Unix Domain Sockets (Java 16+):
-            Path socketFile = Paths.get(socketPath);
-            UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketFile);
-            SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
-            channel.connect(address);
-            DataOutputStream out = new DataOutputStream(Channels.newOutputStream(channel));
-            DataInputStream in = new DataInputStream(Channels.newInputStream(channel));
+        try (RpcClient client = new RpcClient(args[0])) {
+            client.connect();
+            
+            runTest("Register Point Struct", () -> {
+                testRegisterPointStruct(client);
+                return null;
+            });
+            String libraryId = runTest("Load Library", () -> testLoadLibrary(client));
+            runTest("Add Function", () -> {
+                testAddFunction(client, libraryId);
+                return null;
+            });
+            runTest("Greet Function", () -> {
+                testGreetFunction(client, libraryId);
+                return null;
+            });
+            runTest("Callback Functionality", () -> {
+                testCallbackFunctionality(client, libraryId);
+                return null;
+            });
+            runTest("Write Out Buff Functionality", () -> {
+                testWriteOutBuff(client, libraryId);
+                return null;
+            });
 
-            System.out.println("Connecting to " + socketPath + "...");
-            System.out.println("Connected.");
-
-            // 1. Register Struct "Point"
-            JSONObject registerStructRequest = new JSONObject();
-            registerStructRequest.put("command", "register_struct");
-            registerStructRequest.put("request_id", "req-1");
-            JSONObject pointDefinition = new JSONObject();
-            pointDefinition.put("struct_name", "Point");
-            JSONArray definitionArray = new JSONArray();
-            definitionArray.put(new JSONObject().put("name", "x").put("type", "int32"));
-            definitionArray.put(new JSONObject().put("name", "y").put("type", "int32"));
-            pointDefinition.put("definition", definitionArray);
-            registerStructRequest.put("payload", pointDefinition);
-            System.out.println("Registering struct 'Point'");
-            JSONObject registerStructResponse = sendAndReceive(out, in, registerStructRequest);
-            System.out.println("Response: " + registerStructResponse);
-
-            // 2. Load Library
-            JSONObject loadLibraryRequest = new JSONObject();
-            loadLibraryRequest.put("command", "load_library");
-            loadLibraryRequest.put("request_id", "req-2");
-            loadLibraryRequest.put("payload", new JSONObject().put("path", LIBRARY_PATH));
-            System.out.println("Loading library: " + LIBRARY_PATH);
-            JSONObject loadLibraryResponse = sendAndReceive(out, in, loadLibraryRequest);
-            System.out.println("Response: " + loadLibraryResponse);
-            String libraryId = loadLibraryResponse.getJSONObject("data").getString("library_id");
-            System.out.println("Library loaded with ID: " + libraryId);
-
-            // 3. Call function 'add'
-            JSONObject addRequest = new JSONObject();
-            addRequest.put("command", "call_function");
-            addRequest.put("request_id", "req-3");
-            JSONObject addPayload = new JSONObject();
-            addPayload.put("library_id", libraryId);
-            addPayload.put("function_name", "add");
-            addPayload.put("return_type", "int32");
-            JSONArray addArgs = new JSONArray();
-            addArgs.put(new JSONObject().put("type", "int32").put("value", 10));
-            addArgs.put(new JSONObject().put("type", "int32").put("value", 20));
-            addPayload.put("args", addArgs);
-            addRequest.put("payload", addPayload);
-            System.out.println("Calling function 'add' with args (10, 20)");
-            JSONObject addResponse = sendAndReceive(out, in, addRequest);
-            System.out.println("Response: " + addResponse);
-            System.out.println("Result of add(10, 20) is: " + addResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
-
-            // 4. Call function 'greet'
-            JSONObject greetRequest = new JSONObject();
-            greetRequest.put("command", "call_function");
-            greetRequest.put("request_id", "req-4");
-            JSONObject greetPayload = new JSONObject();
-            greetPayload.put("library_id", libraryId);
-            greetPayload.put("function_name", "greet");
-            greetPayload.put("return_type", "string");
-            JSONArray greetArgs = new JSONArray();
-            greetArgs.put(new JSONObject().put("type", "string").put("value", "Java World"));
-            greetPayload.put("args", greetArgs);
-            greetRequest.put("payload", greetPayload);
-            System.out.println("Calling function 'greet' with arg ('Java World')");
-            JSONObject greetResponse = sendAndReceive(out, in, greetRequest);
-            System.out.println("Response: " + greetResponse);
-            System.out.println("Result of greet('Java World') is: '" + greetResponse.getJSONObject("data").getJSONObject("return").getString("value") + "'");
-
-            // 5. Call function 'process_point_by_val'
-            JSONObject processPointByValRequest = new JSONObject();
-            processPointByValRequest.put("command", "call_function");
-            processPointByValRequest.put("request_id", "req-5");
-            JSONObject processPointByValPayload = new JSONObject();
-            processPointByValPayload.put("library_id", libraryId);
-            processPointByValPayload.put("function_name", "process_point_by_val");
-            processPointByValPayload.put("return_type", "int32");
-            JSONArray processPointByValArgs = new JSONArray();
-            JSONObject pointVal = new JSONObject().put("x", 10).put("y", 20);
-            processPointByValArgs.put(new JSONObject().put("type", "Point").put("value", pointVal));
-            processPointByValPayload.put("args", processPointByValArgs);
-            processPointByValRequest.put("payload", processPointByValPayload);
-            System.out.println("Calling function 'process_point_by_val' with args (Point {x=10, y=20})");
-            JSONObject processPointByValResponse = sendAndReceive(out, in, processPointByValRequest);
-            System.out.println("Response: " + processPointByValResponse);
-            System.out.println("Result of process_point_by_val is: " + processPointByValResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
-
-            // 6. Call function 'process_point_by_ptr'
-            JSONObject processPointByPtrRequest = new JSONObject();
-            processPointByPtrRequest.put("command", "call_function");
-            processPointByPtrRequest.put("request_id", "req-6");
-            JSONObject processPointByPtrPayload = new JSONObject();
-            processPointByPtrPayload.put("library_id", libraryId);
-            processPointByPtrPayload.put("function_name", "process_point_by_ptr");
-            processPointByPtrPayload.put("return_type", "int32");
-            JSONArray processPointByPtrArgs = new JSONArray();
-            JSONObject pointPtrVal = new JSONObject().put("x", 5).put("y", 6);
-            JSONObject pointPtrArg = new JSONObject().put("type", "pointer").put("value", pointPtrVal).put("target_type", "Point");
-            processPointByPtrArgs.put(pointPtrArg);
-            processPointByPtrPayload.put("args", processPointByPtrArgs);
-            processPointByPtrRequest.put("payload", processPointByPtrPayload);
-            System.out.println("Calling function 'process_point_by_ptr' with args (Point {x=5, y=6})");
-            JSONObject processPointByPtrResponse = sendAndReceive(out, in, processPointByPtrRequest);
-            System.out.println("Response: " + processPointByPtrResponse);
-            System.out.println("Result of process_point_by_ptr is: " + processPointByPtrResponse.getJSONObject("data").getJSONObject("return").getInt("value"));
-
-            // 7. Call function 'create_point'
-            JSONObject createPointRequest = new JSONObject();
-            createPointRequest.put("command", "call_function");
-            createPointRequest.put("request_id", "req-7");
-            JSONObject createPointPayload = new JSONObject();
-            createPointPayload.put("library_id", libraryId);
-            createPointPayload.put("function_name", "create_point");
-            createPointPayload.put("return_type", "Point");
-            JSONArray createPointArgs = new JSONArray();
-            createPointArgs.put(new JSONObject().put("type", "int32").put("value", 100));
-            createPointArgs.put(new JSONObject().put("type", "int32").put("value", 200));
-            createPointPayload.put("args", createPointArgs);
-            createPointRequest.put("payload", createPointPayload);
-            System.out.println("Calling function 'create_point' with args (100, 200)");
-            JSONObject createPointResponse = sendAndReceive(out, in, createPointRequest);
-            System.out.println("Response: " + createPointResponse);
-            System.out.println("Result of create_point is: " + createPointResponse.getJSONObject("data").getJSONObject("return").getJSONObject("value"));
-
-
-        } catch (IOException e) {
-            System.err.println("Error communicating with executor: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("An error occurred: " + e.getMessage());
             e.printStackTrace();
         }
-        System.out.println("Connection closed.");
     }
 
-    private static JSONObject sendAndReceive(DataOutputStream out, DataInputStream in, JSONObject request) throws IOException {
-        String requestStr = request.toString();
-        byte[] requestBytes = requestStr.getBytes("UTF-8");
+    private static <T> T runTest(String name, Callable<T> test) throws Exception {
+        System.out.println("\n--- Running Test: " + name + " ---");
+        try {
+            T result = test.call();
+            System.out.println("--- Test '" + name + "' PASSED ---");
+            return result;
+        } catch (Exception e) {
+            System.err.println("--- Test '" + name + "' FAILED: " + e.getMessage() + " ---");
+            throw e;
+        }
+    }
 
-                    // Send length prefix
-                    ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
-                    lengthBuffer.order(ByteOrder.BIG_ENDIAN); // Executor expects network byte order (big-endian)
-                    lengthBuffer.putInt(requestBytes.length);
-                    out.write(lengthBuffer.array());
-                    out.write(requestBytes);
-                    out.flush();
+    private static void testRegisterPointStruct(RpcClient client) throws Exception {
+        JSONObject request = new JSONObject()
+            .put("command", "register_struct")
+            .put("payload", new JSONObject()
+                .put("struct_name", "Point")
+                .put("definition", new JSONArray()
+                    .put(new JSONObject().put("name", "x").put("type", "int32"))
+                    .put(new JSONObject().put("name", "y").put("type", "int32"))
+                )
+            );
+        JSONObject response = client.sendRequest(request);
+        assert "success".equals(response.getString("status"));
+    }
+
+    private static String testLoadLibrary(RpcClient client) throws Exception {
+        JSONObject request = new JSONObject()
+            .put("command", "load_library")
+            .put("payload", new JSONObject().put("path", LIBRARY_PATH));
+        JSONObject response = client.sendRequest(request);
+        assert "success".equals(response.getString("status"));
+        return response.getJSONObject("data").getString("library_id");
+    }
+
+    private static void testAddFunction(RpcClient client, String libraryId) throws Exception {
+        JSONObject request = new JSONObject()
+            .put("command", "call_function")
+            .put("payload", new JSONObject()
+                .put("library_id", libraryId)
+                .put("function_name", "add")
+                .put("return_type", "int32")
+                .put("args", new JSONArray()
+                    .put(new JSONObject().put("type", "int32").put("value", 10))
+                    .put(new JSONObject().put("type", "int32").put("value", 20))
+                )
+            );
+        JSONObject response = client.sendRequest(request);
+        assert "success".equals(response.getString("status"));
+        int result = response.getJSONObject("data").getJSONObject("return").getInt("value");
+        assert result == 30;
+    }
+
+    private static void testGreetFunction(RpcClient client, String libraryId) throws Exception {
+        JSONObject request = new JSONObject()
+            .put("command", "call_function")
+            .put("payload", new JSONObject()
+                .put("library_id", libraryId)
+                .put("function_name", "greet")
+                .put("return_type", "string")
+                .put("args", new JSONArray()
+                    .put(new JSONObject().put("type", "string").put("value", "Java World"))
+                )
+            );
+        JSONObject response = client.sendRequest(request);
+        assert "success".equals(response.getString("status"));
+        String result = response.getJSONObject("data").getJSONObject("return").getString("value");
+        assert "Hello, Java World".equals(result);
+    }
+
+    private static void testCallbackFunctionality(RpcClient client, String libraryId) throws Exception {
+        // 1. Register callback
+        JSONObject regRequest = new JSONObject()
+            .put("command", "register_callback")
+            .put("payload", new JSONObject()
+                .put("return_type", "void")
+                .put("args_type", new JSONArray().put("string").put("int32"))
+            );
+        JSONObject regResponse = client.sendRequest(regRequest);
+        assert "success".equals(regResponse.getString("status"));
+        String callbackId = regResponse.getJSONObject("data").getString("callback_id");
+
+        // 2. Call function that uses the callback
+        JSONObject callRequest = new JSONObject()
+            .put("command", "call_function")
+            .put("payload", new JSONObject()
+                .put("library_id", libraryId)
+                .put("function_name", "call_my_callback")
+                .put("return_type", "void")
+                .put("args", new JSONArray()
+                    .put(new JSONObject().put("type", "callback").put("value", callbackId))
+                    .put(new JSONObject().put("type", "string").put("value", "Hello from Java!"))
+                )
+            );
+        client.sendRequest(callRequest); // Response will be handled by receiver thread
+
+        // 3. Wait for and verify the event
+        JSONObject event = client.getEventQueue().poll(5, TimeUnit.SECONDS);
+        assert event != null;
+        assert "invoke_callback".equals(event.getString("event"));
+        JSONObject payload = event.getJSONObject("payload");
+        assert callbackId.equals(payload.getString("callback_id"));
+        JSONArray args = payload.getJSONArray("args");
+        assert "Hello from Java!".equals(args.getJSONObject(0).getString("value"));
+        assert 123 == args.getJSONObject(1).getInt("value");
+    }
+
+    private static void testWriteOutBuff(RpcClient client, String libraryId) throws Exception {
+        int bufferCapacity = 64;
+        JSONObject request = new JSONObject()
+            .put("command", "call_function")
+            .put("payload", new JSONObject()
+                .put("library_id", libraryId)
+                .put("function_name", "writeOutBuff")
+                .put("return_type", "int32")
+                .put("args", new JSONArray()
+                    .put(new JSONObject()
+                        .put("type", "buffer")
+                        .put("direction", "out")
+                        .put("size", bufferCapacity))
+                    .put(new JSONObject()
+                        .put("type", "pointer")
+                        .put("target_type", "int32")
+                        .put("direction", "inout")
+                        .put("value", bufferCapacity))
+                )
+            );
+        JSONObject response = client.sendRequest(request);
+        assert "success".equals(response.getString("status"));
         
-                    // Read length prefix
-                    byte[] lenBytes = new byte[4];
-                    in.readFully(lenBytes);
-                    ByteBuffer receivedLengthBuffer = ByteBuffer.wrap(lenBytes);
-                    receivedLengthBuffer.order(ByteOrder.BIG_ENDIAN); // Executor sends network byte order (big-endian)
-                    int responseLength = receivedLengthBuffer.getInt();
-        // Read response
-        byte[] responseBytes = new byte[responseLength];
-        in.readFully(responseBytes);
-        String responseStr = new String(responseBytes, "UTF-8");
-        return new JSONObject(responseStr);
+        JSONObject data = response.getJSONObject("data");
+        int returnValue = data.getJSONObject("return").getInt("value");
+        assert returnValue == 0;
+
+        JSONArray outParams = data.getJSONArray("out_params");
+        String bufferContent = null;
+        Integer updatedSize = null;
+        for (int i = 0; i < outParams.length(); i++) {
+            JSONObject param = outParams.getJSONObject(i);
+            if (param.getInt("index") == 0) {
+                bufferContent = param.getString("value");
+            } else if (param.getInt("index") == 1) {
+                updatedSize = param.getInt("value");
+            }
+        }
+        
+        String expectedString = "Hello from writeOutBuff!";
+        assert expectedString.equals(bufferContent);
+        assert updatedSize != null && updatedSize == expectedString.length();
     }
 }
