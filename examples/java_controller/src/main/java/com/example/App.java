@@ -105,6 +105,7 @@ class RpcClient implements AutoCloseable {
                     eventQueue.put(response);
                 }
             }
+            System.out.println("read end");
         } catch (IOException e) {
             if (!Thread.currentThread().isInterrupted()) {
                 System.out.println("[Receiver] Connection closed: " + e.getMessage());
