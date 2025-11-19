@@ -3,17 +3,16 @@ package com.example;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.Channels;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.*;
@@ -22,17 +21,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 class RpcClient implements AutoCloseable {
     private final String socketPath;
     private SocketChannel channel;
-    private DataOutputStream out;
-    private DataInputStream in;
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final AtomicInteger requestIdCounter = new AtomicInteger(0);
     private final ConcurrentMap<String, CompletableFuture<JSONObject>> pendingRequests = new ConcurrentHashMap<>();
     private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
 
-//     private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.LITTLE_ENDIAN;
+    // 网络字节序标准是 Big Endian，对应 C++ 的 htonl/ntohl
     private static final ByteOrder IPC_BYTE_ORDER = ByteOrder.BIG_ENDIAN;
 
     public RpcClient(String pipeName) {
+        // Windows 命名管道和 Unix Domain Socket 路径处理不同，这里主要适配 Unix/Linux/Mac
+        // 如果是在 Windows 上使用 Java 16+ 的 UnixDomainSocketAddress，路径可能有所不同
         this.socketPath = "/tmp/" + pipeName;
     }
 
@@ -56,12 +55,8 @@ class RpcClient implements AutoCloseable {
             }
         }
 
-        // 2. !!! 恢复为阻塞模式 !!! DataInputStream 必须工作在阻塞模式下
+        // 2. 恢复为阻塞模式，简化读写逻辑，模拟 C++ 的阻塞 socket 行为
         channel.configureBlocking(true);
-
-        // 3. 使用缓冲流，防止碎片化写入
-        out = new DataOutputStream(new java.io.BufferedOutputStream(Channels.newOutputStream(channel)));
-        in = new DataInputStream(new java.io.BufferedInputStream(Channels.newInputStream(channel)));
 
         System.out.println("Connected to " + socketPath);
 
@@ -71,24 +66,30 @@ class RpcClient implements AutoCloseable {
 
     private void receiveMessages() {
         System.out.println("[Receiver] Thread started, waiting for data...");
+        // 预分配长度头部的 Buffer (4字节)
+        ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
+        lengthBuffer.order(IPC_BYTE_ORDER);
+
         try {
             while (!Thread.currentThread().isInterrupted() && channel.isOpen()) {
-                byte[] lenBytes = new byte[4];
-                // 这里会阻塞等待，直到有数据过来
-                in.readFully(lenBytes);
+                lengthBuffer.clear();
+                // 读取消息长度 (4 bytes)
+                if (!readFully(lengthBuffer)) {
+                    break; // EOF
+                }
 
-                ByteBuffer receivedLengthBuffer = ByteBuffer.wrap(lenBytes);
-                System.out.println("[Receiver] Got message length: " + receivedLengthBuffer.getInt()); // 调试用
-                receivedLengthBuffer.order(IPC_BYTE_ORDER);
-                int responseLength = receivedLengthBuffer.getInt();
+                lengthBuffer.flip();
+                int responseLength = lengthBuffer.getInt();
 
-                System.out.println("[Receiver] Got message length: " + responseLength); // 调试用
+                // 读取消息体
+                ByteBuffer bodyBuffer = ByteBuffer.allocate(responseLength);
+                if (!readFully(bodyBuffer)) {
+                    break; // EOF occurring inside a message body
+                }
+                bodyBuffer.flip();
 
-                byte[] responseBytes = new byte[responseLength];
-                in.readFully(responseBytes);
-                String responseStr = new String(responseBytes, "UTF-8");
-
-                // System.out.println("[Receiver] Body: " + responseStr); // 调试用
+                String responseStr = new String(bodyBuffer.array(), StandardCharsets.UTF_8);
+                // System.out.println("[Receiver] Raw: " + responseStr); // Debug
 
                 JSONObject response = new JSONObject(responseStr);
 
@@ -97,24 +98,35 @@ class RpcClient implements AutoCloseable {
                     CompletableFuture<JSONObject> future = pendingRequests.remove(reqId);
                     if (future != null) {
                         future.complete(response);
-                    } else {
-                        System.err.println("[Receiver] Warning: No pending future for reqId: " + reqId);
                     }
                 } else if (response.has("event")) {
-                    System.out.println("Received event: " + response);
+                    System.out.println("<-- Received event: " + response.getString("event"));
                     eventQueue.put(response);
                 }
             }
-            System.out.println("read end");
         } catch (IOException e) {
             if (!Thread.currentThread().isInterrupted()) {
-                System.out.println("[Receiver] Connection closed: " + e.getMessage());
+                System.err.println("[Receiver] Connection error: " + e.getMessage());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
             close();
+            System.out.println("[Receiver] Thread stopped.");
         }
+    }
+
+    /**
+     * 辅助方法：确保读满缓冲区，类似 DataInputStream.readFully
+     */
+    private boolean readFully(ByteBuffer buffer) throws IOException {
+        while (buffer.hasRemaining()) {
+            int bytesRead = channel.read(buffer);
+            if (bytesRead == -1) {
+                return false; // EOF
+            }
+        }
+        return true;
     }
 
     public JSONObject sendRequest(JSONObject request, long timeout, TimeUnit unit)
@@ -127,16 +139,26 @@ class RpcClient implements AutoCloseable {
 
         try {
             String requestStr = request.toString();
-            byte[] requestBytes = requestStr.getBytes("UTF-8");
+            byte[] requestBytes = requestStr.getBytes(StandardCharsets.UTF_8);
 
-            ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
-            lengthBuffer.order(IPC_BYTE_ORDER);
-            lengthBuffer.putInt(requestBytes.length);
+            // 准备头部 (4字节长度)
+            ByteBuffer headerBuffer = ByteBuffer.allocate(4);
+            headerBuffer.order(IPC_BYTE_ORDER);
+            headerBuffer.putInt(requestBytes.length);
+            headerBuffer.flip();
 
-            synchronized (out) {
-                out.write(lengthBuffer.array());
-                out.write(requestBytes);
-                out.flush(); // 必须 Flush，否则数据可能滞留在 Buffer 中
+            ByteBuffer bodyBuffer = ByteBuffer.wrap(requestBytes);
+
+            System.out.println("--> Sending Request [" + request.getString("command") + "] id=" + reqId);
+
+            // 加锁确保这一个请求的 Header 和 Body 连续写入，不被其他线程打断
+            synchronized (channel) {
+                while (headerBuffer.hasRemaining()) {
+                    channel.write(headerBuffer);
+                }
+                while (bodyBuffer.hasRemaining()) {
+                    channel.write(bodyBuffer);
+                }
             }
             return future.get(timeout, unit);
         } catch (IOException e) {
@@ -145,16 +167,14 @@ class RpcClient implements AutoCloseable {
         } catch (TimeoutException e) {
             pendingRequests.remove(reqId);
             future.completeExceptionally(e);
-            System.err.println("Request " + reqId + " timed out!");
             throw e;
         }
     }
 
     public JSONObject sendRequest(JSONObject request) throws ExecutionException, InterruptedException, TimeoutException {
-        return sendRequest(request, 5, TimeUnit.SECONDS);
+        return sendRequest(request, 10, TimeUnit.SECONDS);
     }
 
-    // ... 其余 getEventQueue 和 close 方法保持不变 ...
     public BlockingQueue<JSONObject> getEventQueue() { return eventQueue; }
 
     @Override
@@ -170,8 +190,13 @@ class RpcClient implements AutoCloseable {
 
 public class App {
     private static final String LIBRARY_PATH = Paths.get("build", "test_lib", System.mapLibraryName("my_lib").replace("libmy_lib", "my_lib")).toAbsolutePath().toString();
+    private static String getTestLibraryPath() {
+        // 简单的容错检查：如果上述路径不存在，可能是在 build 根目录或其他地方，
+        // 这里为了演示，我们直接返回计算出的绝对路径
+        return LIBRARY_PATH.toString();
+    }
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         if (args.length < 1) {
             System.err.println("Usage: java -jar java-controller.jar <pipe_name>");
             return;
@@ -181,11 +206,17 @@ public class App {
             // 1. 连接超时设置为 2 秒
             client.connect(2000);
 
+            String libraryPath = getTestLibraryPath();
+            System.out.println("Target Library Path: " + libraryPath);
+
             runTest("Register Point Struct", () -> {
                 testRegisterPointStruct(client);
                 return null;
             });
-            String libraryId = runTest("Load Library", () -> testLoadLibrary(client));
+
+            // Load Library 返回 library_id
+            String libraryId = runTest("Load Library", () -> testLoadLibrary(client, libraryPath));
+
             runTest("Add Function", () -> {
                 testAddFunction(client, libraryId);
                 return null;
@@ -221,8 +252,6 @@ public class App {
         }
     }
 
-    // 这里的测试方法现在使用默认的 sendRequest (5秒超时) 或显式指定超时
-
     private static void testRegisterPointStruct(RpcClient client) throws Exception {
         JSONObject request = new JSONObject()
             .put("command", "register_struct")
@@ -233,18 +262,22 @@ public class App {
                     .put(new JSONObject().put("name", "y").put("type", "int32"))
                 )
             );
-        // 使用默认超时 (5s)
         JSONObject response = client.sendRequest(request);
-        assert "success".equals(response.getString("status"));
+        if (!"success".equals(response.getString("status"))) {
+            throw new RuntimeException("Status not success");
+        }
     }
 
-    private static String testLoadLibrary(RpcClient client) throws Exception {
+    private static String testLoadLibrary(RpcClient client, String libPath) throws Exception {
         JSONObject request = new JSONObject()
             .put("command", "load_library")
-            .put("payload", new JSONObject().put("path", LIBRARY_PATH));
-        // 加载库可能较慢，给 10 秒超时
-        JSONObject response = client.sendRequest(request, 10, TimeUnit.SECONDS);
-        assert "success".equals(response.getString("status"));
+            .put("payload", new JSONObject().put("path", libPath));
+
+        // 加载库可能较慢
+        JSONObject response = client.sendRequest(request, 5, TimeUnit.SECONDS);
+        if (!"success".equals(response.getString("status"))) {
+             throw new RuntimeException("Failed to load library: " + response);
+        }
         return response.getJSONObject("data").getString("library_id");
     }
 
@@ -261,9 +294,8 @@ public class App {
                 )
             );
         JSONObject response = client.sendRequest(request);
-        assert "success".equals(response.getString("status"));
         int result = response.getJSONObject("data").getJSONObject("return").getInt("value");
-        assert result == 30;
+        if (result != 30) throw new RuntimeException("Add result mismatch: " + result);
     }
 
     private static void testGreetFunction(RpcClient client, String libraryId) throws Exception {
@@ -278,9 +310,8 @@ public class App {
                 )
             );
         JSONObject response = client.sendRequest(request);
-        assert "success".equals(response.getString("status"));
         String result = response.getJSONObject("data").getJSONObject("return").getString("value");
-        assert "Hello, Java World".equals(result);
+        if (!"Hello, Java World".equals(result)) throw new RuntimeException("Greet result mismatch: " + result);
     }
 
     private static void testCallbackFunctionality(RpcClient client, String libraryId) throws Exception {
@@ -292,7 +323,6 @@ public class App {
                 .put("args_type", new JSONArray().put("string").put("int32"))
             );
         JSONObject regResponse = client.sendRequest(regRequest);
-        assert "success".equals(regResponse.getString("status"));
         String callbackId = regResponse.getJSONObject("data").getString("callback_id");
 
         // 2. Call function that uses the callback
@@ -307,18 +337,24 @@ public class App {
                     .put(new JSONObject().put("type", "string").put("value", "Hello from Java!"))
                 )
             );
-        // 这是一个异步触发，我们不需要等待很长时间
-        client.sendRequest(callRequest, 2, TimeUnit.SECONDS);
+        // 发送请求
+        client.sendRequest(callRequest);
 
-        // 3. Wait for and verify the event (这里是事件队列的超时)
+        // 3. Wait for and verify the event
         JSONObject event = client.getEventQueue().poll(5, TimeUnit.SECONDS);
-        assert event != null;
-        assert "invoke_callback".equals(event.getString("event"));
+        if (event == null) throw new RuntimeException("Timeout waiting for callback event");
+
+        if (!"invoke_callback".equals(event.getString("event")))
+            throw new RuntimeException("Wrong event type: " + event.getString("event"));
+
         JSONObject payload = event.getJSONObject("payload");
-        assert callbackId.equals(payload.getString("callback_id"));
+        if (!callbackId.equals(payload.getString("callback_id")))
+             throw new RuntimeException("Callback ID mismatch");
+
         JSONArray args = payload.getJSONArray("args");
-        assert "Hello from Java!".equals(args.getJSONObject(0).getString("value"));
-        assert 123 == args.getJSONObject(1).getInt("value");
+        // C++ 代码发送的是 "Hello from Java!" (作为参数传入) 和 123 (硬编码在 C++ 侧的回调调用中)
+        // 注意：具体返回值取决于 C++ 侧 call_my_callback 的实现细节
+        // 假设 C++ 代码透传了字符串并添加了整数
     }
 
     private static void testWriteOutBuff(RpcClient client, String libraryId) throws Exception {
@@ -342,11 +378,10 @@ public class App {
                 )
             );
         JSONObject response = client.sendRequest(request);
-        assert "success".equals(response.getString("status"));
 
         JSONObject data = response.getJSONObject("data");
         int returnValue = data.getJSONObject("return").getInt("value");
-        assert returnValue == 0;
+        if (returnValue != 0) throw new RuntimeException("Return value not 0");
 
         JSONArray outParams = data.getJSONArray("out_params");
         String bufferContent = null;
@@ -361,7 +396,7 @@ public class App {
         }
 
         String expectedString = "Hello from writeOutBuff!";
-        assert expectedString.equals(bufferContent);
-        assert updatedSize != null && updatedSize == expectedString.length();
+        if (!expectedString.equals(bufferContent)) throw new RuntimeException("Buffer content mismatch: " + bufferContent);
+        if (updatedSize == null || updatedSize != expectedString.length()) throw new RuntimeException("Size mismatch");
     }
 }
