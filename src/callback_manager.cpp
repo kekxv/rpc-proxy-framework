@@ -1,17 +1,8 @@
-// src/callback_manager.cpp
 #include "callback_manager.h"
 #include <iostream>
 #include <stdexcept>
-#include <algorithm> // For std::transform
-
-// For UUID generation
-#ifdef _WIN32
-#include <objbase.h> // For CoCreateGuid
-#include <Rpc.h>     // For UuidToStringA, RpcStringFreeA
-#pragma comment(lib, "Rpcrt4.lib") // Link with Rpcrt4.lib
-#else
-#include <uuid/uuid.h> // For uuid_generate_time, uuid_unparse
-#endif
+#include <algorithm>
+#include "uuid.h" // Using stduuid library
 
 // Helper to convert ffi_type* to string for JSON serialization
 std::string ffiTypeToString(ffi_type* type) {
@@ -27,9 +18,7 @@ std::string ffiTypeToString(ffi_type* type) {
     if (type == &ffi_type_float) return "float";
     if (type == &ffi_type_double) return "double";
     if (type == &ffi_type_pointer) return "pointer";
-    // Handle struct types if necessary, requires mapping back from ffi_type* to struct name
-    // For now, assume pointer for structs passed by value or pointer
-    return "unknown"; // Should not happen for supported types
+    return "unknown";
 }
 
 CallbackManager::CallbackManager(ClientConnection* connection, StructManager* struct_manager)
@@ -46,22 +35,9 @@ CallbackManager::~CallbackManager() {
 }
 
 std::string CallbackManager::generateUniqueId() {
-    std::string uuid_str;
-#ifdef _WIN32
-    GUID guid;
-    CoCreateGuid(&guid);
-    RPC_CSTR rpc_str;
-    UuidToStringA(&guid, &rpc_str);
-    uuid_str = reinterpret_cast<char*>(rpc_str);
-    RpcStringFreeA(&rpc_str);
-#else
-    uuid_t uuid;
-    uuid_generate_time(uuid);
-    char s[37];
-    uuid_unparse(uuid, s);
-    uuid_str = s;
-#endif
-    return "cb-" + uuid_str;
+    uuids::uuid_system_generator gen;
+    uuids::uuid id = gen();
+    return "cb-" + uuids::to_string(id);
 }
 
 ffi_type* CallbackManager::getFfiType(const std::string& type_name) {

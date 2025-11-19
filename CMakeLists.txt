@@ -51,6 +51,23 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# --- 添加 GSL-lite 库 (stduuid 的依赖) ---
+FetchContent_Declare(
+    gsl-lite
+    GIT_REPOSITORY https://github.com/gsl-lite/gsl-lite.git
+    GIT_TAG v0.40.0
+)
+FetchContent_MakeAvailable(gsl-lite)
+
+# --- 添加 UUID 库 (stduuid) ---
+set(UUID_SYSTEM_GENERATOR ON) # 启用系统 UUID 生成器
+FetchContent_Declare(
+    stduuid
+    GIT_REPOSITORY https://github.com/mariusbancila/stduuid.git
+    GIT_TAG v1.2.3
+)
+FetchContent_MakeAvailable(stduuid)
+
 # --- 添加 Google Test ---
 FetchContent_Declare(
         googletest
@@ -75,24 +92,23 @@ target_include_directories(executor_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${FFI_INCLUDE_DIRS}
         ${json_SOURCE_DIR}/include
+        ${gsl-lite_SOURCE_DIR}/include # 添加 gsl-lite
+        ${stduuid_SOURCE_DIR}          # 添加 stduuid 根目录以查找 gsl
+        ${stduuid_SOURCE_DIR}/include # 添加 stduuid
 )
 
 target_link_libraries(executor_core PRIVATE
         ${FFI_LIBRARIES}
+        stduuid # 链接 stduuid 接口库
 )
 
 # --- 平台特定的链接 ---
 if (UNIX AND NOT APPLE)
-    # Linux 需要链接 dl 和 uuid
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(UUID REQUIRED uuid)
-    target_link_libraries(executor_core PRIVATE dl ${UUID_LIBRARIES})
-elseif (APPLE)
-    # macOS 需要链接 dl
+    # Linux 需要链接 dl
     target_link_libraries(executor_core PRIVATE dl)
 endif ()
 if (WIN32)
-    target_link_libraries(executor_core PRIVATE ws2_32.lib Rpcrt4.lib)
+    target_link_libraries(executor_core PRIVATE ws2_32.lib)
     # 添加一个 post-build 事件
     add_custom_command(
             TARGET executor_core
