@@ -5,6 +5,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.util.Base64; // Import Base64 for encoding/decoding
 import java.util.concurrent.TimeUnit; // Import TimeUnit for timeouts
 
 public class App {
@@ -23,6 +24,15 @@ public class App {
             System.err.println("--- Test '" + name + "' FAILED: " + e.getMessage() + " ---");
             throw e; // 向上抛出以便 main 捕获
         }
+    }
+
+    // Helper to print byte arrays as hex strings
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02X", b));
+        }
+        return sb.toString();
     }
 
     public static void main(String[] args) {
@@ -214,40 +224,71 @@ public class App {
             });
 
 
-            // 6. Write Out Buff
-            runTest("Write Out Buff Functionality", () -> {
+            // 6. Process Buffer Inout Functionality
+            runTest("Process Buffer Inout Functionality", () -> {
                 int bufferCapacity = 64;
+                byte[] inputRawData = {0x05}; // Input byte 0x05
+                String inputBase64 = Base64.getEncoder().encodeToString(inputRawData); // "BQ=="
+
+                byte[] expectedRawOutputPrefix = {(byte)0xAA, 0x06, (byte)0xDE, (byte)0xAD}; // Expected output prefix
+
                 JSONObject req = new JSONObject()
                     .put("command", "call_function")
                     .put("payload", new JSONObject()
                         .put("library_id", libraryId[0])
-                        .put("function_name", "writeOutBuff")
+                        .put("function_name", "process_buffer_inout")
                         .put("return_type", "int32")
                         .put("args", new JSONArray()
-                            .put(new JSONObject().put("type", "buffer").put("direction", "out").put("size", bufferCapacity))
+                            .put(new JSONObject().put("type", "buffer").put("direction", "inout").put("size", bufferCapacity).put("value", inputBase64))
                             .put(new JSONObject().put("type", "pointer").put("target_type", "int32").put("direction", "inout").put("value", bufferCapacity))
                         )
                     );
                 JSONObject res = client.sendRequest(req);
 
+                if (!"success".equals(res.optString("status"))) {
+                    throw new RuntimeException("process_buffer_inout call failed: " + res.optString("error_message"));
+                }
+
                 JSONObject data = res.getJSONObject("data");
                 int retVal = data.getJSONObject("return").getInt("value");
-                if (retVal != 0) throw new RuntimeException("writeOutBuff returned non-zero");
+                if (retVal != 0) throw new RuntimeException("process_buffer_inout returned non-zero");
 
                 JSONArray outParams = data.getJSONArray("out_params");
-                String bufferContent = "";
+                String outputBase64Value = "";
                 int updatedSize = -1;
 
                 for (int i = 0; i < outParams.length(); i++) {
                     JSONObject p = outParams.getJSONObject(i);
-                    if (p.getInt("index") == 0) bufferContent = p.getString("value");
+                    if (p.getInt("index") == 0) outputBase64Value = p.getString("value");
                     if (p.getInt("index") == 1) updatedSize = p.getInt("value");
                 }
 
-                String expected = "Hello from writeOutBuff!";
-                if (!expected.equals(bufferContent)) throw new RuntimeException("Buffer content mismatch");
-                if (updatedSize != expected.length()) throw new RuntimeException("Size mismatch");
-                System.out.println("Buffer content verified: '" + bufferContent + "' (Size: " + updatedSize + ")");
+                if (outputBase64Value.isEmpty()) throw new RuntimeException("Output buffer not received or empty");
+                if (updatedSize == -1) throw new RuntimeException("Updated size not received");
+
+                byte[] decodedOutputBytes = Base64.getDecoder().decode(outputBase64Value);
+
+                if (decodedOutputBytes.length != bufferCapacity) {
+                    throw new RuntimeException("Decoded buffer length mismatch: expected " + bufferCapacity + ", got " + decodedOutputBytes.length);
+                }
+
+                // Verify prefix
+                for (int i = 0; i < expectedRawOutputPrefix.length; i++) {
+                    if (decodedOutputBytes[i] != expectedRawOutputPrefix[i]) {
+                        throw new RuntimeException("Decoded buffer prefix mismatch at index " + i);
+                    }
+                }
+                // Verify remaining zeros
+                for (int i = expectedRawOutputPrefix.length; i < bufferCapacity; i++) {
+                    if (decodedOutputBytes[i] != 0x00) {
+                        throw new RuntimeException("Remaining buffer not filled with zeros at index " + i);
+                    }
+                }
+
+                if (updatedSize != expectedRawOutputPrefix.length) {
+                    throw new RuntimeException("Updated size mismatch: expected " + expectedRawOutputPrefix.length + ", got " + updatedSize);
+                }
+                System.out.println("Buffer content verified (prefix: " + bytesToHex(expectedRawOutputPrefix) + ", Size: " + updatedSize + ")");
             });
 
         } catch (Exception e) {
