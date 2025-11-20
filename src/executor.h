@@ -3,18 +3,23 @@
 
 #include <string>
 #include <memory>
+// Forward declarations
+class IpcServer;
+class ClientConnection;
 
-class IpcServer; // Forward declaration
-
-class Executor {
+class Executor
+{
 public:
-    Executor();
-    ~Executor(); // Destructor to manage resource cleanup
-    void run(const std::string& pipe_name);
-    void stop();
+  Executor();
+  ~Executor();
+
+  void run(const std::string& pipe_name);
+  void stop();
 
 private:
-    std::unique_ptr<IpcServer> server;
-};
+  std::unique_ptr<IpcServer> server;
 
+  // 新增私有方法，用于线程函数
+  void handle_client_session(std::unique_ptr<ClientConnection> connection);
+};
 #endif // EXECUTOR_H

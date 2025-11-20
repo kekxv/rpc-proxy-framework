@@ -5,14 +5,109 @@
 #include "callback_manager.h"
 #include "ffi_dispatcher.h"
 #include <nlohmann/json.hpp>
+
 #include <iostream>
 #include <stdexcept>
 #include <memory>
+#include <thread>
+#include <vector>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <atomic>
 
 using json = nlohmann::json;
 
-// This function handles a single request within a client session.
-// It operates on the session-specific managers.
+// 全局日志锁，防止多线程打印乱码
+static std::mutex g_log_mutex;
+
+// -----------------------------------------------------------------------------
+// Command Dispatcher Logic
+// -----------------------------------------------------------------------------
+
+// 定义命令处理函数的签名
+using CommandHandler = std::function<void(
+  const json& request_payload,
+  json& response_json,
+  LibManager& lib_mgr,
+  StructManager& struct_mgr,
+  CallbackManager& cb_mgr,
+  FfiDispatcher& ffi_disp
+)>;
+
+// 注册所有支持的命令
+static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
+  {
+    "load_library", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
+                       FfiDispatcher&)
+    {
+      std::string path = payload.at("path");
+      std::string lib_id = lib.load_library(path);
+      resp["status"] = "success";
+      resp["data"]["library_id"] = lib_id;
+    }
+  },
+  {
+    "unload_library", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
+                         FfiDispatcher&)
+    {
+      std::string lib_id = payload.at("library_id");
+      lib.unload_library(lib_id);
+      resp["status"] = "success";
+    }
+  },
+  {
+    "register_struct", [](const json& payload, json& resp, LibManager&, StructManager& sm, CallbackManager&,
+                          FfiDispatcher&)
+    {
+      std::string name = payload.at("struct_name");
+      sm.register_struct(name, payload.at("definition"));
+      resp["status"] = "success";
+    }
+  },
+  {
+    "unregister_struct", [](const json& payload, json& resp, LibManager&, StructManager& sm, CallbackManager&,
+                            FfiDispatcher&)
+    {
+      std::string name = payload.at("struct_name");
+      sm.unregister_struct(name);
+      resp["status"] = "success";
+    }
+  },
+  {
+    "register_callback", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager& cm,
+                            FfiDispatcher&)
+    {
+      std::string ret_type = payload.at("return_type");
+      auto args = payload.at("args_type").get<std::vector<std::string>>();
+      std::string cb_id = cm.registerCallback(ret_type, args);
+      resp["status"] = "success";
+      resp["data"]["callback_id"] = cb_id;
+    }
+  },
+  {
+    "unregister_callback", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager& cm,
+                              FfiDispatcher&)
+    {
+      std::string cb_id = payload.at("callback_id");
+      cm.unregisterCallback(cb_id);
+      resp["status"] = "success";
+    }
+  },
+  {
+    "call_function", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
+                        FfiDispatcher& ffi)
+    {
+      std::string lib_id = payload.at("library_id");
+      std::string func_name = payload.at("function_name");
+      void* func_ptr = lib.get_function(lib_id, func_name);
+      json result = ffi.call_function(func_ptr, payload);
+      resp["status"] = "success";
+      resp["data"] = result;
+    }
+  }
+};
+
 std::string handle_session_request(
     const std::string& request_json_str,
     LibManager& lib_manager,
@@ -20,126 +115,153 @@ std::string handle_session_request(
     CallbackManager& callback_manager,
     FfiDispatcher& ffi_dispatcher)
 {
-    json response_json;
-    try {
-        json request_json = json::parse(request_json_str);
-        std::string command = request_json.at("command");
-        response_json["request_id"] = request_json.value("request_id", "");
+  json response_json;
+  std::string req_id = "";
 
-        if (command == "load_library") {
-            std::string path = request_json.at("payload").at("path");
-            std::string library_id = lib_manager.load_library(path);
-            response_json["status"] = "success";
-            response_json["data"]["library_id"] = library_id;
-        } else if (command == "unload_library") {
-            std::string library_id = request_json.at("payload").at("library_id");
-            lib_manager.unload_library(library_id);
-            response_json["status"] = "success";
-        } else if (command == "register_struct") {
-            std::string struct_name = request_json.at("payload").at("struct_name");
-            const json& definition = request_json.at("payload").at("definition");
-            struct_manager.register_struct(struct_name, definition);
-            response_json["status"] = "success";
-        } else if (command == "unregister_struct") {
-            std::string struct_name = request_json.at("payload").at("struct_name");
-            struct_manager.unregister_struct(struct_name);
-            response_json["status"] = "success";
-        } else if (command == "register_callback") {
-            std::string return_type = request_json.at("payload").at("return_type");
-            std::vector<std::string> args_type = request_json.at("payload").at("args_type").get<std::vector<std::string>>();
-            std::string callback_id = callback_manager.registerCallback(return_type, args_type);
-            response_json["status"] = "success";
-            response_json["data"]["callback_id"] = callback_id;
-        } else if (command == "unregister_callback") {
-            std::string callback_id = request_json.at("payload").at("callback_id");
-            callback_manager.unregisterCallback(callback_id);
-            response_json["status"] = "success";
-        } else if (command == "call_function") {
-            const auto& payload = request_json.at("payload");
-            std::string library_id = payload.at("library_id");
-            std::string function_name = payload.at("function_name");
-            void* func_ptr = lib_manager.get_function(library_id, function_name);
-            json result = ffi_dispatcher.call_function(func_ptr, payload);
-            response_json["status"] = "success";
-            response_json["data"] = result;
-        } else {
-            throw std::runtime_error("Unknown command: " + command);
-        }
-    } catch (const std::exception& e) {
-        response_json["status"] = "error";
-        response_json["error_message"] = e.what();
+  try {
+    // 1. Parse Request
+    json request_json = json::parse(request_json_str);
+    req_id = request_json.value("request_id", "");
+    response_json["request_id"] = req_id;
+
+    // 2. Extract Command
+    if (!request_json.contains("command")) {
+      throw std::runtime_error("Missing 'command' field in request");
     }
-    return response_json.dump();
+    std::string command = request_json["command"];
+
+    // 3. Dispatch Command
+    auto it = COMMAND_DISPATCHER.find(command);
+    if (it != COMMAND_DISPATCHER.end()) {
+      // 只有确认是支持的命令后，才尝试获取 payload
+      // 如果此时没有 payload，.at() 抛出异常是合理的（参数缺失）
+      // 如果这里为了健壮性，也可以使用 .value("payload", json({})) 传入空对象
+      if (!request_json.contains("payload")) {
+        // 这里可以选择抛出更友好的错误，或者让 .at() 抛出标准 json 错误
+        // 为了简单，我们直接调用 .at，如果缺 payload 会抛 "key 'payload' not found"
+        // 这对于已知命令参数缺失是正确的行为。
+      }
+
+      const auto& payload = request_json.at("payload");
+      it->second(payload, response_json, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+    } else {
+      // 4. Handle Unknown Command (这就是测试用例期待的路径)
+      throw std::runtime_error("Unknown command: " + command);
+    }
+
+  } catch (const std::exception& e) {
+    response_json["status"] = "error";
+    response_json["error_message"] = e.what();
+    if (!req_id.empty()) {
+      response_json["request_id"] = req_id;
+    }
+  }
+
+  return response_json.dump();
 }
 
-Executor::Executor() : server(IpcServer::create()) {}
+// -----------------------------------------------------------------------------
+// Executor Implementation
+// -----------------------------------------------------------------------------
 
-Executor::~Executor() {
-    // The unique_ptr will handle the deletion of the server.
-    // If stop() needs to be called, it should be done explicitly before destruction.
+Executor::Executor() : server(IpcServer::create())
+{
 }
 
-void Executor::stop() {
-    if (server) {
-        server->stop();
-    }
+Executor::~Executor()
+{
+  stop();
 }
 
-void Executor::run(const std::string& pipe_name) {
-    server->listen(pipe_name);
+void Executor::stop()
+{
+  if (server)
+  {
+    server->stop();
+  }
+  // 注意：detach 的线程会随进程结束，或者在处理完当前连接后自动退出。
+  // 如果需要强制所有线程立即停止，需要在 ClientConnection 中实现强制关闭，
+  // 并维护一个线程列表进行管理。这里采用简单的 detach 模式。
+}
 
-    while (true) {
-        // 1. Accept a new connection. This blocks until a client connects.
-        std::unique_ptr<ClientConnection> connection = server->accept();
-        if (!connection) {
-            // This can happen if server->stop() is called, which is our shutdown signal.
-            std::cout << "Accept failed, likely due to server shutdown. Exiting run loop." << std::endl;
-            break;
-        }
+// 处理单个客户端会话的逻辑（在独立线程中运行）
+void Executor::handle_client_session(std::unique_ptr<ClientConnection> connection)
+{
+  // 资源隔离：每个线程/会话拥有独立的 Managers
+  StructManager struct_manager;
+  CallbackManager callback_manager(connection.get(), &struct_manager);
+  LibManager lib_manager;
+  FfiDispatcher ffi_dispatcher(struct_manager, &callback_manager);
 
-        // 2. Create a new set of managers for this client session.
-        StructManager struct_manager;
-        CallbackManager callback_manager(connection.get(), &struct_manager);
-        LibManager lib_manager;
-        FfiDispatcher ffi_dispatcher(struct_manager, &callback_manager);
+  {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    // std::cout << "[Executor] New session started in thread " << std::this_thread::get_id() << std::endl;
+  }
 
-        // 3. Loop to handle all requests from this client.
-        while (connection->isOpen()) {
-            std::string request_str = connection->read();
-            if (request_str.empty()) {
-                // An empty read indicates the client has disconnected.
-                break;
-            }
-
-            std::string response_str;
-            try {
-                response_str = handle_session_request(
-                    request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
-            } catch (const std::exception& e) {
-                std::cerr << "[Executor] Error handling request: " << e.what() << std::endl;
-                // Attempt to send an error response if possible
-                json error_response;
-                error_response["status"] = "error";
-                error_response["error_message"] = e.what();
-                // If request_str was valid JSON, we can try to get request_id
-                try {
-                    json request_json = json::parse(request_str);
-                    error_response["request_id"] = request_json.value("request_id", "");
-                } catch (...) {
-                    // Ignore if request_str itself is malformed
-                }
-                response_str = error_response.dump();
-            }
-            
-            if (!connection->write(response_str)) {
-                std::cerr << "[Executor] Failed to write response (or error response). Client likely disconnected." << std::endl;
-                break;
-            }
-        }
-
-        // 4. Client has disconnected.
-        // The managers (lib_manager, struct_manager, callback_manager) go out of scope here.
-        // Their destructors are automatically called, cleaning up all resources for this session.
-        std::cout << "Client disconnected. Session resources cleaned up." << std::endl;
+  while (connection->isOpen())
+  {
+    std::string request_str = connection->read();
+    if (request_str.empty())
+    {
+      break; // Client disconnected
     }
+
+    std::string response_str;
+    try
+    {
+      response_str = handle_session_request(
+        request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+    }
+    catch (const std::exception& e)
+    {
+      // 如果处理过程彻底崩溃（极少见），构建一个兜底错误
+      json err;
+      err["status"] = "error";
+      err["error_message"] = std::string("Critical internal error: ") + e.what();
+      response_str = err.dump();
+    }
+
+    if (!connection->write(response_str))
+    {
+      std::lock_guard<std::mutex> lock(g_log_mutex);
+      std::cerr << "[Executor] Failed to write response. Connection lost." << std::endl;
+      break;
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    // std::cout << "[Executor] Session ended. Resources cleaned up." << std::endl;
+  }
+}
+
+void Executor::run(const std::string& pipe_name)
+{
+  server->listen(pipe_name);
+
+  std::cout << "Executor service listening on: " << pipe_name << std::endl;
+
+  while (true)
+  {
+    // 1. Accept a new connection (Blocking)
+    std::unique_ptr<ClientConnection> connection = server->accept();
+
+    if (!connection)
+    {
+      std::cout << "Accept returned null, server stopping..." << std::endl;
+      break;
+    }
+
+    // 2. Spawn a new thread to handle this client
+    // 使用 std::thread 将连接的所有权转移到新线程中
+    std::thread([this, conn = std::move(connection)]() mutable
+    {
+      this->handle_client_session(std::move(conn));
+    }).detach();
+
+    // 注意：这里使用了 detach()。这意味着线程将在后台独立运行。
+    // 优点：代码简单，不需要维护线程列表。
+    // 缺点：在 Executor 析构时，无法显式等待这些线程结束。
+    // 对于这种服务型应用，这通常是可以接受的，或者依赖操作系统在进程退出时清理。
+  }
 }
