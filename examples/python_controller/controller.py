@@ -7,6 +7,7 @@ import platform
 import threading
 import queue
 import time
+import base64
 
 # --- 新增：用于彩色输出的类 ---
 class Colors:
@@ -466,19 +467,25 @@ def test_multi_callback_functionality(client, library_id):
   print(f"{Colors.GREEN}Multi-callback unregistered successfully.{Colors.RESET}")
 
 
-def test_write_out_buff(client, library_id):
-  print(f"{Colors.BLUE}Calling 'writeOutBuff' function with IN/OUT params...{Colors.RESET}")
+def test_process_buffer_inout(client, library_id):
+  print(f"{Colors.BLUE}Calling 'process_buffer_inout' function with INOUT buffer...{Colors.RESET}")
   
   buffer_capacity = 64
+  input_raw_data = b'\x05' # Input byte for the C function
+  input_base64 = base64.b64encode(input_raw_data).decode('utf-8') # "BQ=="
+
+  # C function writes {0xAA, 0x06, 0xDE, 0xAD} for input 0x05
+  expected_raw_output_prefix = b'\xAA\x06\xDE\xAD'
+
   args = [
-      # Arg 0: The output buffer
-      {"type": "buffer", "direction": "out", "size": buffer_capacity},
-      # Arg 1: The size, passed as an IN/OUT pointer
+      # Arg 0: The inout buffer
+      {"type": "buffer", "direction": "inout", "size": buffer_capacity, "value": input_base64},
+      # Arg 1: The size, passed as an INOUT pointer
       {"type": "pointer", "target_type": "int32", "direction": "inout", "value": buffer_capacity}
   ]
   
-  response = client.call_function(library_id, "writeOutBuff", "int32", args)
-  assert response["status"] == "success", f"Failed to call 'writeOutBuff': {response.get('error_message')}"
+  response = client.call_function(library_id, "process_buffer_inout", "int32", args)
+  assert response["status"] == "success", f"Failed to call 'process_buffer_inout': {response.get('error_message')}"
   
   # --- Verify the new complex response format ---
   
@@ -493,23 +500,38 @@ def test_write_out_buff(client, library_id):
   
   # Find the buffer and the size from the out_params array
   # Their order is not guaranteed, so we check by index.
-  out_buffer_val = None
+  out_buffer_param = None
   out_size_val = None
   for param in out_params:
       if param["index"] == 0: # This was our buffer
-          out_buffer_val = param["value"]
+          out_buffer_param = param
       elif param["index"] == 1: # This was our size
           out_size_val = param["value"]
 
-  assert out_buffer_val is not None, "Did not receive output buffer in response"
+  assert out_buffer_param is not None, "Did not receive output buffer in response"
   assert out_size_val is not None, "Did not receive output size in response"
 
   # 3. Assert the values
-  expected_string = "Hello from writeOutBuff!"
-  assert out_buffer_val == expected_string, f"Expected buffer content '{expected_string}', got '{out_buffer_val}'"
-  assert out_size_val == len(expected_string), f"Expected updated size {len(expected_string)}, got {out_size_val}"
+  assert out_buffer_param["type"] == "buffer", f"Expected output buffer type 'buffer', got '{out_buffer_param['type']}'"
+  
+  # The buffer value is a base64 encoded string
+  output_base64_value = out_buffer_param["value"]
+  
+  # Decode the base64 output and verify its content
+  decoded_output_bytes = base64.b64decode(output_base64_value)
+  
+  # Check only the prefix that was actually written by the C function
+  assert decoded_output_bytes.startswith(expected_raw_output_prefix), \
+      f"Expected decoded buffer to start with {expected_raw_output_prefix.hex()}, got {decoded_output_bytes[:len(expected_raw_output_prefix)].hex()}"
+  
+  # The rest of the buffer should be zeros (due to zero-initialization)
+  assert len(decoded_output_bytes) == buffer_capacity, f"Expected buffer length {buffer_capacity}, got {len(decoded_output_bytes)}"
+  assert decoded_output_bytes[len(expected_raw_output_prefix):] == b'\x00' * (buffer_capacity - len(expected_raw_output_prefix)), \
+      f"Expected remaining buffer to be zeros, but got {decoded_output_bytes[len(expected_raw_output_prefix):].hex()}"
 
-  print(f"{Colors.GREEN}Buffer content verified: '{out_buffer_val}' (Size: {out_size_val}){Colors.RESET}")
+  assert out_size_val == len(expected_raw_output_prefix), f"Expected updated size {len(expected_raw_output_prefix)}, got {out_size_val}"
+
+  print(f"{Colors.GREEN}Buffer content verified (prefix: {expected_raw_output_prefix.hex()}, Size: {out_size_val}){Colors.RESET}")
 
 
 def main():
@@ -555,7 +577,7 @@ def main():
     run_test(client, "Create Line Function", test_create_line, library_id)
     run_test(client, "Single Callback Functionality", test_callback_functionality, library_id) # Renamed
     run_test(client, "Multi-Callback Functionality", test_multi_callback_functionality, library_id) # New test
-    run_test(client, "Write Out Buffer Functionality", test_write_out_buff, library_id)
+    run_test(client, "Process Buffer Inout Functionality", test_process_buffer_inout, library_id)
 
   except Exception as e:
     print(f"\n{Colors.BOLD}{Colors.BRIGHT_RED}An error occurred during tests: {e}{Colors.RESET}")
