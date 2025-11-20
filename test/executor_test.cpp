@@ -309,18 +309,22 @@ TEST_F(ExecutorTest, CallbackFunction)
     ASSERT_EQ(event_args[1]["value"], 123);
 }
 
-TEST_F(ExecutorTest, WriteOutBuffFunction)
+TEST_F(ExecutorTest, ProcessBufferInout)
 {
     const int buffer_capacity = 64;
+    // Input data: a single byte 0x05, base64 encoded is "BQ=="
+    const std::string input_base64 = "BQ==";
+
     json payload = {
         {"library_id", test_lib_id},
-        {"function_name", "writeOutBuff"},
+        {"function_name", "process_buffer_inout"},
         {"return_type", "int32"},
         {"args", {
             {
                 {"type", "buffer"},
-                {"direction", "out"},
-                {"size", buffer_capacity}
+                {"direction", "inout"},
+                {"size", buffer_capacity},
+                {"value", input_base64}
             },
             {
                 {"type", "pointer"},
@@ -331,7 +335,7 @@ TEST_F(ExecutorTest, WriteOutBuffFunction)
         }}
     };
 
-    json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "writeOutBuff"), payload);
+    json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload);
 
     // 1. Check direct return value
     ASSERT_EQ(result["return"]["type"], "int32");
@@ -341,7 +345,6 @@ TEST_F(ExecutorTest, WriteOutBuffFunction)
     const auto& out_params = result["out_params"];
     ASSERT_EQ(out_params.size(), 2);
 
-    // Find the params by index, as order is not guaranteed
     json buffer_param;
     json size_param;
     for(const auto& param : out_params) {
@@ -355,10 +358,15 @@ TEST_F(ExecutorTest, WriteOutBuffFunction)
     ASSERT_FALSE(buffer_param.is_null());
     ASSERT_FALSE(size_param.is_null());
 
-    const std::string expected_string = "Hello from writeOutBuff!";
-    ASSERT_EQ(buffer_param["type"], "string");
-    ASSERT_EQ(buffer_param["value"], expected_string);
+    // The C function reads 0x05, and writes {0xAA, 0x06, 0xDE, 0xAD} into the buffer.
+    // The rest of the 64-byte buffer is zeros.
+    // The expected base64 is for the entire buffer.
+    const std::string expected_base64 = "qgHerQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+    const int expected_size = 4;
+
+    ASSERT_EQ(buffer_param["type"], "buffer");
+    ASSERT_EQ(buffer_param["value"], expected_base64);
 
     ASSERT_EQ(size_param["type"], "int32");
-    ASSERT_EQ(size_param["value"], expected_string.length());
+    ASSERT_EQ(size_param["value"], expected_size);
 }

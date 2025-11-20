@@ -96,23 +96,29 @@ DLLEXPORT void call_multi_callbacks(void (*callback_fn)(const char* message, int
 // New function to demonstrate writing to an output buffer
 // buff: output buffer, size: input buffer capacity, output actual size written
 // buff: output buffer, size: input buffer capacity, output actual size written
+// New function to demonstrate inout buffer
+// buff: inout buffer, size: input buffer capacity, output actual size written
 // Returns 0 on success, -1 for invalid arguments, -2 for buffer too small
-DLLEXPORT int writeOutBuff(char* buff, int* size) {
+DLLEXPORT int process_buffer_inout(char* buff, int* size) {
     if (buff == NULL || size == NULL) {
         return -1; // Invalid arguments
     }
-
-    const char* data_to_write = "Hello from writeOutBuff!";
-    int data_len = strlen(data_to_write);
-    int required_size = data_len + 1; // +1 for null terminator
-
-    if (*size < required_size) {
-        // Not enough space, do not write anything, just report error.
+    if (*size < 4) {
+        *size = 0;
         return -2; // Buffer too small
     }
 
-    strcpy(buff, data_to_write);
-    *size = data_len; // Update size to actual data length written (excluding null terminator)
+    // Read input from buffer (e.g., first byte)
+    char input_val = buff[0];
+
+    // Write new data to buffer
+    buff[0] = 0xAA; // Overwrite a byte to show it's inout
+    buff[1] = input_val + 1; // Use input value
+    buff[2] = 0xDE;
+    buff[3] = 0xAD;
+
+    // Report actual size of the meaningful output data
+    *size = 4;
 
     return 0; // Success
 }

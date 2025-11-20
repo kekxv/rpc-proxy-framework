@@ -8,11 +8,122 @@
 #include <cstring>
 #include <iostream>
 
+#include <cctype>
+#include <algorithm>
+
 #ifdef _WIN32
 #include <malloc.h>
 #else
 #include <stdlib.h>
 #endif
+
+// Base64 encoding function (taken from a public domain implementation)
+static const std::string base64_chars =
+             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+             "abcdefghijklmnopqrstuvwxyz"
+             "0123456789+/";
+
+// Helper for base64_decode
+inline bool is_base64(unsigned char c) {
+  return (isalnum(c) || (c == '+') || (c == '/'));
+}
+
+std::string base64_encode(unsigned char const* bytes_to_encode, unsigned int in_len) {
+    std::string ret;
+    int i = 0;
+    int j = 0;
+    unsigned char char_array_3[3];
+    unsigned char char_array_4[4];
+
+    while (in_len--) {
+        char_array_3[i++] = *(bytes_to_encode++);
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+
+            for(i = 0; (i < 4) ; i++)
+                ret += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+
+    if (i) {
+        for(j = i; j < 3; j++)
+            char_array_3[j] = '\0';
+
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        char_array_4[3] = char_array_3[2] & 0x3f;
+
+        for (j = 0; (j < i + 1); j++)
+            ret += base64_chars[char_array_4[j]];
+
+        while((i++ < 3))
+            ret += '=';
+    }
+
+    return ret;
+}
+
+// (from a public domain implementation)
+std::string base64_decode(std::string const& encoded_string) {
+    size_t in_len = encoded_string.size();
+    size_t i = 0;
+    size_t j = 0;
+    int in_ = 0;
+    unsigned char char_array_4[4], char_array_3[3];
+    std::string ret;
+
+    while (in_len-- && ( encoded_string[in_] != '=') && is_base64(encoded_string[in_])) {
+        char_array_4[i++] = encoded_string[in_]; in_++;
+        if (i ==4) {
+            for (i = 0; i <4; i++) {
+                auto find_ret = base64_chars.find(char_array_4[i]);
+                if(find_ret == std::string::npos){
+                    // If a character is not found in base64_chars, it's invalid.
+                    // You might want to throw an exception or handle the error appropriately.
+                    // For now, we'll just stop decoding.
+                    return ret;
+                }
+                char_array_4[i] = find_ret;
+            }
+
+            char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
+            char_array_3[1] = ((char_array_4[1] & 0xf) << 4) + ((char_array_4[2] & 0x3c) >> 2);
+            char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
+
+            for (i = 0; (i < 3); i++)
+                ret += char_array_3[i];
+            i = 0;
+        }
+    }
+
+    if (i) {
+        for (j = i; j <4; j++)
+            char_array_4[j] = 0;
+
+        for (j = 0; j <4; j++) {
+             auto find_ret = base64_chars.find(char_array_4[j]);
+            if(find_ret == std::string::npos){
+                // Error handling as above
+                return ret;
+            }
+            char_array_4[j] = find_ret;
+        }
+
+        char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
+        char_array_3[1] = ((char_array_4[1] & 0xf) << 4) + ((char_array_4[2] & 0x3c) >> 2);
+        char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
+
+        for (j = 0; (j < i - 1); j++) ret += char_array_3[j];
+    }
+
+    return ret;
+}
+
 
 // Helper struct to manage memory for out/inout parameters
 struct AllocatedArg
@@ -175,16 +286,31 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
   std::string type_str = arg_json.at("type");
   std::string direction = arg_json.value("direction", "in");
 
-  if (direction == "out")
+  if (type_str == "buffer")
   {
-    if (type_str == "buffer")
-    {
       size_t buffer_size = arg_json.at("size").get<size_t>();
       char* buffer_mem = new char[buffer_size + sizeof(ffi_arg)](); // Zero-initialize
+
+      if (direction == "in" || direction == "inout")
+      {
+          if (arg_json.contains("value"))
+          {
+              std::string b64_data = arg_json.at("value").get<std::string>();
+              std::string decoded_data = base64_decode(b64_data);
+              memcpy(buffer_mem, decoded_data.c_str(), std::min(decoded_data.length(), buffer_size));
+          }
+      }
+
       allocated_args.emplace_back(
-        std::make_unique<AllocatedArg>(index, type_str, "", buffer_mem, buffer_size, direction));
+              std::make_unique<AllocatedArg>(index, type_str, "", buffer_mem, buffer_size, direction));
+
       return arg_storage.allocate(buffer_mem);
-    }
+  }
+
+  if (direction == "out")
+  {
+      // After buffer, only pointer should be allowed for out, but this is handled by inout
+      // This block could be an error or more specific handling if needed
     throw std::runtime_error("Direction 'out' is only supported for type 'buffer'");
   }
 
@@ -324,19 +450,22 @@ json FfiDispatcher::call_function(void* func_ptr, const json& payload)
   json out_params = json::array();
   for (const auto& alloc_arg : allocated_args)
   {
-    json out_param;
-    out_param["index"] = alloc_arg->index;
-    if (alloc_arg->type == "buffer")
-    {
-      out_param["type"] = "string"; // Assume out buffers are strings for now
-      out_param["value"] = std::string(static_cast<char*>(alloc_arg->memory));
-    }
-    else if (alloc_arg->type == "pointer")
-    {
-      out_param["type"] = alloc_arg->target_type;
-      out_param["value"] = read_json_from_memory(static_cast<char*>(alloc_arg->memory), alloc_arg->target_type);
-    }
-    out_params.push_back(out_param);
+      if (alloc_arg->direction == "in") {
+          continue;
+      }
+      json out_param;
+      out_param["index"] = alloc_arg->index;
+      if (alloc_arg->type == "buffer")
+      {
+          out_param["type"] = "buffer";
+          out_param["value"] = base64_encode(static_cast<unsigned char*>(alloc_arg->memory), alloc_arg->size);
+      }
+      else if (alloc_arg->type == "pointer")
+      {
+          out_param["type"] = alloc_arg->target_type;
+          out_param["value"] = read_json_from_memory(static_cast<char*>(alloc_arg->memory), alloc_arg->target_type);
+      }
+      out_params.push_back(out_param);
   }
   result["out_params"] = out_params;
 
