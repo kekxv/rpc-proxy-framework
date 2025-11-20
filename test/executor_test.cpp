@@ -1,3 +1,13 @@
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#include <namedpipeapi.h>
+#else
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#endif
 #include "gtest/gtest.h"
 #include "struct_manager.h"
 #include "ffi_dispatcher.h"
@@ -18,18 +28,6 @@
 #include <atomic>
 #include <queue>
 #include <vector>
-
-// Platform-specific includes for RpcClient
-#ifdef _WIN32
-#include <windows.h>
-#include <namedpipeapi.h>
-#include <winsock2.h>
-#else
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#endif
 
 using json = nlohmann::json;
 
@@ -424,10 +422,6 @@ TEST_F(ExecutorTest, ProcessBufferInout)
 }
 
 
-// =====================================================================================
-// End-to-End Tests for Executor IPC
-// =====================================================================================
-
 class RpcTestClient
 {
 public:
@@ -442,7 +436,7 @@ public:
   RpcTestClient(const std::string& pipe_name_in) : sock_(INVALID_SOCKET_HANDLE), request_id_counter_(0), running_(false)
   {
 #ifdef _WIN32
-    pipe_name_ = "\\.\pipe\" + pipe_name_in;
+    pipe_name_ = "\\\\.\\pipe\\" + pipe_name_in;
 #else
     pipe_name_ = "/tmp/" + pipe_name_in;
 #endif
