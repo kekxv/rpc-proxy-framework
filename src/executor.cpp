@@ -72,17 +72,28 @@ std::string handle_session_request(
     return response_json.dump();
 }
 
-Executor::Executor() {}
+Executor::Executor() : server(IpcServer::create()) {}
+
+Executor::~Executor() {
+    // The unique_ptr will handle the deletion of the server.
+    // If stop() needs to be called, it should be done explicitly before destruction.
+}
+
+void Executor::stop() {
+    if (server) {
+        server->stop();
+    }
+}
 
 void Executor::run(const std::string& pipe_name) {
-    auto server = IpcServer::create();
     server->listen(pipe_name);
 
     while (true) {
         // 1. Accept a new connection. This blocks until a client connects.
         std::unique_ptr<ClientConnection> connection = server->accept();
         if (!connection) {
-            std::cerr << "Failed to accept new connection. Shutting down." << std::endl;
+            // This can happen if server->stop() is called, which is our shutdown signal.
+            std::cout << "Accept failed, likely due to server shutdown. Exiting run loop." << std::endl;
             break;
         }
 
