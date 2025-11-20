@@ -84,10 +84,12 @@ add_library(executor_core STATIC
         src/ffi_dispatcher.cpp
         src/struct_manager.cpp
         src/callback_manager.cpp
+        utils/base64.cpp
 )
 
 target_include_directories(executor_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils # Add utils directory
         ${FFI_INCLUDE_DIRS}
         ${json_SOURCE_DIR}/include
         ${gsl-lite_SOURCE_DIR}/include # 添加 gsl-lite
@@ -125,6 +127,7 @@ add_executable(executor
 # --- 包含头文件路径 ---
 target_include_directories(executor PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils # Add utils directory
 )
 
 # --- 链接库 ---

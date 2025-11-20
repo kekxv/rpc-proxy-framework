@@ -7,11 +7,14 @@
 #include <memory>
 #include <iostream>
 
+#include "utils/base64.h" // Use shared Base64 utilities
+
 // Forward declarations for test_lib functions
 extern "C" {
 int add(int a, int b);
 char* greet(char* name);
 }
+
 
 // Dummy ClientConnection for testing CallbackManager in isolation
 class DummyClientConnection : public ClientConnection {
@@ -361,11 +364,18 @@ TEST_F(ExecutorTest, ProcessBufferInout)
     // The C function reads 0x05, and writes {0xAA, 0x06, 0xDE, 0xAD} into the buffer.
     // The rest of the 64-byte buffer is zeros.
     // The expected base64 is for the entire buffer.
-    const std::string expected_base64 = "qgHerQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+    const std::string expected_base64 = "qgberQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
     const int expected_size = 4;
 
     ASSERT_EQ(buffer_param["type"], "buffer");
     ASSERT_EQ(buffer_param["value"], expected_base64);
+
+    // Verify the decoded content of the buffer
+    const std::string expected_raw_data = "\xAA\x06\xDE\xAD";
+    std::string decoded_output_buffer = base64_decode(buffer_param["value"].get<std::string>());
+
+    // We only care about the first 4 bytes for comparison, as the rest are zeros written by C function.
+    ASSERT_EQ(decoded_output_buffer.substr(0, 4), expected_raw_data);
 
     ASSERT_EQ(size_param["type"], "int32");
     ASSERT_EQ(size_param["value"], expected_size);

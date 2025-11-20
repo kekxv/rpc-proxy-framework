@@ -17,6 +17,8 @@ target_link_libraries(executor_test PRIVATE
 # 包含主项目的头文件
 target_include_directories(executor_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../
+        ${CMAKE_CURRENT_SOURCE_DIR}/../utils
         ${CMAKE_CURRENT_SOURCE_DIR}/../test_lib
 )
 
