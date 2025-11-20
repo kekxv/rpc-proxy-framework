@@ -14,11 +14,15 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(json)
 
 
-add_executable(cpp_controller_example cpp_controller_example.cpp)
+add_executable(cpp_controller_example
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../utils/base64.cpp
+        cpp_controller_example.cpp
+)
 
 
 target_include_directories(cpp_controller_example PUBLIC
         ${json_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../
 )
 
 # 平台特定的链接

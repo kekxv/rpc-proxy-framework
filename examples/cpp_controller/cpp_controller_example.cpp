@@ -10,6 +10,7 @@
 #include <filesystem>
 
 #include "nlohmann/json.hpp"
+#include "utils/base64.h" // Include Base64 utilities
 
 #ifdef _WIN32
 #include <windows.h>
@@ -340,35 +341,59 @@ int main(int argc, char* argv[]) {
             std::cout << "Multi-Callback unregistered successfully." << std::endl;
         }, client);
 
-        run_test("Write Out Buff Functionality", [&](RpcClient& c) {
+        run_test("Process Buffer Inout Functionality", [&](RpcClient& c) {
             int buffer_capacity = 64;
+            std::string input_raw_data_str = "\x05"; // Input byte 0x05
+            std::string input_base64 = base64_encode(reinterpret_cast<const unsigned char*>(input_raw_data_str.data()), input_raw_data_str.length());
+
+            std::string expected_raw_output_prefix_str = "\xAA\x06\xDE\xAD"; // Expected output prefix
+
             json req = {{"command", "call_function"}, {"payload", {
                 {"library_id", library_id},
-                {"function_name", "writeOutBuff"},
+                {"function_name", "process_buffer_inout"},
                 {"return_type", "int32"},
                 {"args", {
-                    {{"type", "buffer"}, {"direction", "out"}, {"size", buffer_capacity}},
+                    {{"type", "buffer"}, {"direction", "inout"}, {"size", buffer_capacity}, {"value", input_base64}},
                     {{"type", "pointer"}, {"target_type", "int32"}, {"direction", "inout"}, {"value", buffer_capacity}}
                 }}
             }}};
             json res = c.send_request(req);
-            if (res["status"] != "success") throw std::runtime_error("writeOutBuff call failed");
+            if (res["status"] != "success") throw std::runtime_error("process_buffer_inout call failed");
             
             int return_code = res["data"]["return"]["value"].get<int>();
-            if (return_code != 0) throw std::runtime_error("writeOutBuff returned non-zero status");
+            if (return_code != 0) throw std::runtime_error("process_buffer_inout returned non-zero status");
 
             json out_params = res["data"]["out_params"];
-            std::string buffer_content;
+            std::string output_base64_value;
             int updated_size = -1;
             for(const auto& param : out_params) {
-                if (param["index"] == 0) buffer_content = param["value"].get<std::string>();
+                if (param["index"] == 0) output_base64_value = param["value"].get<std::string>();
                 if (param["index"] == 1) updated_size = param["value"].get<int>();
             }
+
+            if (output_base64_value.empty()) throw std::runtime_error("Output buffer not received or empty");
+            if (updated_size == -1) throw std::runtime_error("Updated size not received");
             
-            std::string expected_string = "Hello from writeOutBuff!";
-            if (buffer_content != expected_string) throw std::runtime_error("Buffer content mismatch");
-            if (updated_size != expected_string.length()) throw std::runtime_error("Updated size mismatch");
-            std::cout << "Buffer content verified: '" << buffer_content << "' (Size: " << updated_size << ")" << std::endl;
+            // Decode the base64 output and verify its content
+            std::string decoded_output_bytes = base64_decode(output_base64_value);
+
+            if (decoded_output_bytes.length() != buffer_capacity) throw std::runtime_error("Decoded buffer length mismatch");
+            if (decoded_output_bytes.substr(0, expected_raw_output_prefix_str.length()) != expected_raw_output_prefix_str) {
+                std::string err_msg = "Decoded buffer prefix mismatch. Expected: ";
+                for(char c : expected_raw_output_prefix_str) err_msg += "0x" + std::to_string((int)(unsigned char)c) + " ";
+                err_msg += ", Got: ";
+                for(char c : decoded_output_bytes.substr(0, expected_raw_output_prefix_str.length())) err_msg += "0x" + std::to_string((int)(unsigned char)c) + " ";
+                throw std::runtime_error(err_msg);
+            }
+            // Check that the rest of the buffer is zeros
+            for (size_t k = expected_raw_output_prefix_str.length(); k < buffer_capacity; ++k) {
+                if (decoded_output_bytes[k] != '\x00') {
+                    throw std::runtime_error("Remaining buffer not filled with zeros.");
+                }
+            }
+            if (updated_size != expected_raw_output_prefix_str.length()) throw std::runtime_error("Updated size mismatch");
+            
+            std::cout << "Buffer content verified (prefix: " << expected_raw_output_prefix_str << ", Size: " << updated_size << ")" << std::endl;
         }, client);
 
     } catch (const std::exception& e) {
