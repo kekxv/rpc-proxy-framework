@@ -299,12 +299,25 @@ public:
 
   void stop() override
   {
-    if (server_fd_ != -1)
-    {
-      close(server_fd_);
-      unlink(socket_path_.c_str());
-      server_fd_ = -1;
+    if (server_fd_ == -1) {
+        return;
     }
+    
+    // The "self-connect" pattern is the most robust way to unblock a blocking accept() call.
+    int dummy_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (dummy_socket != -1) {
+        struct sockaddr_un addr;
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+        // Connect to our own socket to unblock the accept() call. No need to check for success.
+        ::connect(dummy_socket, (struct sockaddr*)&addr, sizeof(addr));
+        close(dummy_socket);
+    }
+
+    // Now we can safely close the original server socket.
+    close(server_fd_);
+    unlink(socket_path_.c_str());
+    server_fd_ = -1;
   }
 
 private:

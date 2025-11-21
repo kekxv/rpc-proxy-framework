@@ -24,6 +24,7 @@ jobs:
 
     - name: Test
       run: ctest --test-dir build --output-on-failure
+      timeout-minutes: 1
 
     - name: Build Test Lib
       run: |
@@ -31,6 +32,7 @@ jobs:
         cmake --build test_lib/build
 
     - name: Run Python Example
+      timeout-minutes: 1
       run: |
         build/executor --pipe my_pipe & 
         EXECUTOR_PID=$!
@@ -46,6 +48,7 @@ jobs:
         cd ../..
 
     - name: Run Java Example
+      timeout-minutes: 1
       run: |
         build/executor --pipe my_pipe & 
         EXECUTOR_PID=$!
@@ -55,6 +58,7 @@ jobs:
         rm /tmp/my_pipe # Clean up Unix domain socket
 
     - name: Build C++ Example
+      timeout-minutes: 1
       run: |
         cmake -B examples/cpp_controller/build -DCMAKE_BUILD_TYPE=Release examples/cpp_controller
         cmake --build examples/cpp_controller/build
@@ -87,6 +91,7 @@ jobs:
 
     - name: Test
       run: ctest --test-dir build --output-on-failure
+      timeout-minutes: 1
 
   build-windows-x64:
     runs-on: windows-latest
@@ -102,6 +107,7 @@ jobs:
 
     - name: Test (x64)
       run: ctest --test-dir build --output-on-failure -C Release
+      timeout-minutes: 1
 
     - name: Package and Upload Win64 Artifacts
       shell: pwsh
@@ -138,6 +144,7 @@ jobs:
 
     - name: Test (x86)
       run: ctest --test-dir build --output-on-failure -C Release
+      timeout-minutes: 1
 
     - name: Package and Upload Win32 Artifacts
       shell: pwsh
