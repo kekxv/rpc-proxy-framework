@@ -23,7 +23,7 @@ jobs:
         cmake --build build --config Release
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure --timeout 55
       timeout-minutes: 1
 
     - name: Build Test Lib
@@ -58,12 +58,12 @@ jobs:
         rm /tmp/my_pipe # Clean up Unix domain socket
 
     - name: Build C++ Example
-      timeout-minutes: 1
       run: |
         cmake -B examples/cpp_controller/build -DCMAKE_BUILD_TYPE=Release examples/cpp_controller
         cmake --build examples/cpp_controller/build
 
     - name: Run C++ Example
+      timeout-minutes: 1
       run: |
         build/executor --pipe my_pipe & 
         EXECUTOR_PID=$!
@@ -90,7 +90,7 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure --timeout 55
       timeout-minutes: 1
 
   build-windows-x64:
@@ -106,7 +106,7 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Test (x64)
-      run: ctest --test-dir build --output-on-failure -C Release
+      run: ctest --test-dir build --output-on-failure -C Release --timeout 55
       timeout-minutes: 1
 
     - name: Package and Upload Win64 Artifacts
@@ -143,7 +143,7 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Test (x86)
-      run: ctest --test-dir build --output-on-failure -C Release
+      run: ctest --test-dir build --output-on-failure -C Release --timeout 55
       timeout-minutes: 1
 
     - name: Package and Upload Win32 Artifacts
