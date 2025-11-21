@@ -534,6 +534,214 @@ def test_process_buffer_inout(client, library_id):
   print(f"{Colors.GREEN}Buffer content verified (prefix: {expected_raw_output_prefix.hex()}, Size: {out_size_val}){Colors.RESET}")
 
 
+# --- 为 Windows 平台导入依赖 ---
+if platform.system() == "Windows":
+  try:
+    import win32pipe
+    import win32file
+    import pywintypes
+  except ImportError:
+    print("错误: Windows 平台需要 'pywin32' 库。")
+    print("请使用 'pip install pywin32' 命令安装。")
+    sys.exit(1)
+
+# --- 配置 ---
+NUM_CLIENTS = 10  # 要模拟的并发客户端数量
+PRINT_LOCK = threading.Lock() # 用于保证多线程打印时输出内容不混乱
+
+
+def safe_print(message):
+  """线程安全的打印函数"""
+  with PRINT_LOCK:
+    print(message)
+
+
+class SimpleClient:
+  """
+  一个简化的、跨平台的RPC客户端，用于演示基本的连接和请求。
+  它使用阻塞IO，不包含独立的接收线程，使每个客户端的逻辑更简单。
+  """
+  def __init__(self, pipe_name, client_id):
+    self.pipe_name = pipe_name
+    self.client_id = client_id
+    self.connection = None
+    self.is_windows = platform.system() == "Windows"
+    self._request_id_counter = 0
+
+  def connect(self):
+    """连接到命名管道（Windows）或Unix套接字（Linux/macOS）"""
+    try:
+      if self.is_windows:
+        pipe_path = f"\\\\.\\pipe\\{self.pipe_name}"
+        safe_print(f"[Client {self.client_id}] {Colors.BLUE}Connecting to {pipe_path}...{Colors.RESET}")
+
+        # 实现带有重试逻辑的健壮连接
+        start_time = time.time()
+        while time.time() - start_time < 5: # 5秒超时
+          try:
+            self.connection = win32file.CreateFile(
+              pipe_path,
+              win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+              0, None, win32file.OPEN_EXISTING, 0, None)
+            safe_print(f"[Client {self.client_id}] {Colors.GREEN}Pipe connected.{Colors.RESET}")
+            return True
+          except pywintypes.error as e:
+            # ERROR_PIPE_BUSY
+            if e.winerror == 231:
+              # 管道正忙，等待一会再试
+              time.sleep(0.1)
+              continue
+            else:
+              raise # 其他错误，直接抛出
+        raise TimeoutError("Connection attempt timed out.")
+
+      else: # Linux or macOS
+        socket_path = f"/tmp/{self.pipe_name}"
+        if not os.path.exists(socket_path):
+          raise FileNotFoundError(f"Socket file not found: {socket_path}")
+        self.connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        safe_print(f"[Client {self.client_id}] {Colors.BLUE}Connecting to {socket_path}...{Colors.RESET}")
+        self.connection.connect(socket_path)
+        safe_print(f"[Client {self.client_id}] {Colors.GREEN}Socket connected.{Colors.RESET}")
+        return True
+
+    except Exception as e:
+      safe_print(f"[Client {self.client_id}] {Colors.RED}Connection failed: {e}{Colors.RESET}")
+      return False
+
+  def close(self):
+    if self.connection:
+      self.connection.close()
+      safe_print(f"[Client {self.client_id}] {Colors.CYAN}Connection closed.{Colors.RESET}")
+
+  def send(self, data):
+    """打包并发送数据"""
+    message = json.dumps(data).encode('utf-8')
+    packed_len = struct.pack('>I', len(message))
+
+    if self.is_windows:
+      win32file.WriteFile(self.connection, packed_len)
+      win32file.WriteFile(self.connection, message)
+    else:
+      self.connection.sendall(packed_len)
+      self.connection.sendall(message)
+
+  def receive(self):
+    """接收并解包数据"""
+    if self.is_windows:
+      hr, packed_len = win32file.ReadFile(self.connection, 4)
+      if not packed_len: return None
+    else:
+      packed_len = self.connection.recv(4)
+      if not packed_len: return None
+
+    msg_len = struct.unpack('>I', packed_len)[0]
+
+    if self.is_windows:
+      hr, message = win32file.ReadFile(self.connection, msg_len)
+    else:
+      # Unix socket需要循环读取以保证接收完整
+      message = b''
+      while len(message) < msg_len:
+        packet = self.connection.recv(msg_len - len(message))
+        if not packet: break
+        message += packet
+
+    return json.loads(message.decode('utf-8'))
+
+  def _get_next_request_id(self):
+    self._request_id_counter += 1
+    return f"req-{self.client_id}-{self._request_id_counter}"
+
+  def call(self, command, payload):
+    """发送一个RPC请求并等待响应"""
+    request = {
+      "command": command,
+      "request_id": self._get_next_request_id(),
+      "payload": payload
+    }
+    self.send(request)
+    return self.receive()
+
+
+def get_test_lib_path():
+  """获取跨平台的测试库路径"""
+  lib_ext_map = {"Linux": ".so", "Darwin": ".dylib", "Windows": ".dll"}
+  lib_ext = lib_ext_map.get(platform.system(), ".so")
+
+  # 尝试多个可能的构建目录
+  possible_paths = [
+    f"build/test_lib/my_lib{lib_ext}",
+    f"cmake-build-debug/test_lib/my_lib{lib_ext}",
+    f"../build/test_lib/my_lib{lib_ext}",
+    f"../cmake-build-debug/test_lib/my_lib{lib_ext}",
+    f"test_lib/build/my_lib{lib_ext}" # In-source build
+  ]
+
+  for path in possible_paths:
+    if os.path.exists(path):
+      return os.path.abspath(path)
+
+  raise FileNotFoundError(f"Test library (my_lib{lib_ext}) not found in common build directories.")
+
+
+def run_client_session(client_id, pipe_name, lib_path):
+  """
+  模拟一个客户端的完整会话：连接，加载库，调用函数，然后断开。
+  """
+  safe_print(f"[Client {client_id}] {Colors.YELLOW}Thread started.{Colors.RESET}")
+
+  client = SimpleClient(pipe_name, client_id)
+  library_id = None
+
+  try:
+    if not client.connect():
+      return
+
+    # 1. 加载库
+    response = client.call("load_library", {"path": lib_path})
+    if not response or response.get("status") != "success":
+      raise RuntimeError(f"Failed to load library. Response: {response}")
+    library_id = response["data"]["library_id"]
+    safe_print(f"[Client {client_id}] {Colors.GREEN}Library loaded with ID: {library_id[:8]}...{Colors.RESET}")
+
+    # 2. 调用函数
+    a = client_id * 10
+    b = 5
+    args = [
+      {"type": "int32", "value": a},
+      {"type": "int32", "value": b}
+    ]
+    payload = {
+      "library_id": library_id,
+      "function_name": "add",
+      "return_type": "int32",
+      "args": args
+    }
+    response = client.call("call_function", payload)
+
+    if not response or response.get("status") != "success":
+      raise RuntimeError(f"Function call failed. Response: {response}")
+
+    result = response["data"]["return"]["value"]
+    expected = a + b
+
+    # 3. 验证结果
+    if result == expected:
+      safe_print(f"[Client {client_id}] {Colors.BOLD}{Colors.GREEN}SUCCESS! add({a}, {b}) => {result}{Colors.RESET}")
+    else:
+      raise ValueError(f"Assertion failed: add({a}, {b}) expected {expected}, but got {result}")
+
+  except Exception as e:
+    safe_print(f"[Client {client_id}] {Colors.BOLD}{Colors.RED}An error occurred: {e}{Colors.RESET}")
+  finally:
+    # 4. 卸载库并关闭连接
+    if library_id:
+      client.call("unload_library", {"library_id": library_id})
+      safe_print(f"[Client {client_id}] {Colors.CYAN}Library unloaded.{Colors.RESET}")
+    client.close()
+
+
 def main():
   if len(sys.argv) != 2:
     print(f"{Colors.BRIGHT_RED}Usage: python {sys.argv[0]} <pipe_name>{Colors.RESET}")
@@ -593,6 +801,22 @@ def main():
     client.unregister_struct("Point")
 
     client.close()
+
+  print(f"\n{Colors.BOLD}{Colors.MAGENTA}--- Starting {NUM_CLIENTS} Concurrent Clients ---{Colors.RESET}\n")
+  print(f"{Colors.YELLOW}每个客户端将连接到管道 '{pipe_name}', 加载库, 调用 'add' 函数, 然后断开。{Colors.RESET}\n")
+
+  threads = []
+  for i in range(NUM_CLIENTS):
+    # 创建一个线程，目标是 run_client_session 函数
+    thread = threading.Thread(target=run_client_session, args=(i, pipe_name, lib_path))
+    threads.append(thread)
+    thread.start()
+
+  # 等待所有线程完成
+  for thread in threads:
+    thread.join()
+
+  print(f"\n{Colors.BOLD}{Colors.MAGENTA}--- All {NUM_CLIENTS} client sessions finished ---\n{Colors.RESET}")
 
 if __name__ == "__main__":
   main()
