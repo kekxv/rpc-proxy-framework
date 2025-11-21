@@ -91,9 +91,9 @@
 所有通信都基于简单的JSON请求/响应模式。
 
 ### 请求 (Request)
-```json
+```json5
 {
-  "command": "load_library | unload_library | register_struct | register_callback | unregister_callback | call_function",
+  "command": "load_library | unload_library | register_struct | unregister_struct | register_callback | unregister_callback | call_function",
   "request_id": "unique_id_for_tracking",
   "payload": {
     // ... command-specific data
@@ -124,6 +124,18 @@
 }
 ```
 > **定义说明**: `register_callback` 用于向 `executor` 注册一个回调签名。`executor` 会为此签名生成一个唯一的 `callback_id` 并返回给 `controller`。`return_type` 是回调函数的返回类型，`args_type` 是回调函数接受的参数类型列表。
+
+#### `unregister_callback` 示例
+```json
+{
+  "command": "unregister_callback",
+  "request_id": "req-00X",
+  "payload": {
+    "callback_id": "cb-uuid-456"
+  }
+}
+```
+> **定义说明**: `unregister_callback` 用于从 `executor` 注销一个回调。
 
 #### `register_struct` 示例
 ```json
@@ -157,7 +169,7 @@
   }
 }
 ```
-> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`, `callback`。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
+> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`, `callback`, `buffer`。当 `type` 为 `pointer` 时，`value` 可以是结构体或结构体数组，也可以是基本类型数组。当 `type` 为 `buffer` 时，需要额外指定 `direction` (in, out, inout) 和 `size` (缓冲区大小)。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
 >
 > **结构体参数示例**:
 > ```json
@@ -185,9 +197,20 @@
 >   "value": "cb-uuid-456"
 > }
 > ```
+>
+> **buffer 参数示例**:
+> 当需要传递缓冲区时，`type` 字段应为 `"buffer"`，`value` 字段是 Base64 编码的二进制数据。`direction` 字段指定了缓冲区在函数调用中的方向 (in, out, inout)。`size` 字段指定了缓冲区的最大容量。
+> ```json5
+> {
+>   "type": "buffer",
+>   "direction": "inout",
+>   "size": 1024,
+>   "value": "SGVsbG8gd29ybGQ=" // Base64 encoded "Hello world"
+> }
+> ```
 
 ### 响应 (Response)
-```json
+```json5
 {
   "request_id": "same_as_request",
   "status": "success | error",
@@ -257,7 +280,7 @@
 为了支持回调函数，通信模型扩展为双向的。`executor` 可以在任何时候主动向 `controller` 发送事件。这些事件没有 `request_id`，因为它们不是对某个请求的响应。
 
 ### 事件 (Event)
-```json
+```json5
 {
   "event": "invoke_callback",
   "payload": {
@@ -358,10 +381,13 @@ rpc-proxy-framework/
 │   ├── lib_manager.h/.cpp   # 动态库管理器
 │   ├── ffi_dispatcher.h/.cpp  # FFI 调用分发器
 │   ├── struct_manager.h/.cpp  # 结构体管理器
-│   └── callback_manager.h/.cpp # 回调管理器
+│   ├── callback_manager.h/.cpp # 回调管理器
 ├── platform/                  # (可选) 存放平台特定代码的头文件
 │   ├── common.h
 │   └── ...
+├── utils/                     # 工具类
+│   ├── base64.cpp             # Base64 编解码实现
+│   └── base64.h               # Base64 编解码头文件
 ├── third_party/               # 存放第三方库, 如 libffi 或 json
 └── ...
 ```
