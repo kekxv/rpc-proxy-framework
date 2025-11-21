@@ -546,7 +546,7 @@ if platform.system() == "Windows":
     sys.exit(1)
 
 # --- 配置 ---
-NUM_CLIENTS = 10  # 要模拟的并发客户端数量
+NUM_CLIENTS = 5  # 要模拟的并发客户端数量
 PRINT_LOCK = threading.Lock() # 用于保证多线程打印时输出内容不混乱
 
 

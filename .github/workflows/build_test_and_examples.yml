@@ -54,6 +54,7 @@ jobs:
         EXECUTOR_PID=$!
         sleep 3
         java -jar examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
+        java -cp  examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar com.kekxv.MultiClientApp my_pipe
         kill $EXECUTOR_PID
         rm /tmp/my_pipe # Clean up Unix domain socket
 
