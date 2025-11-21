@@ -109,34 +109,38 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
 };
 
 std::string handle_session_request(
-    const std::string& request_json_str,
-    LibManager& lib_manager,
-    StructManager& struct_manager,
-    CallbackManager& callback_manager,
-    FfiDispatcher& ffi_dispatcher)
+  const std::string& request_json_str,
+  LibManager& lib_manager,
+  StructManager& struct_manager,
+  CallbackManager& callback_manager,
+  FfiDispatcher& ffi_dispatcher)
 {
   json response_json;
   std::string req_id = "";
 
-  try {
+  try
+  {
     // 1. Parse Request
     json request_json = json::parse(request_json_str);
     req_id = request_json.value("request_id", "");
     response_json["request_id"] = req_id;
 
     // 2. Extract Command
-    if (!request_json.contains("command")) {
+    if (!request_json.contains("command"))
+    {
       throw std::runtime_error("Missing 'command' field in request");
     }
     std::string command = request_json["command"];
 
     // 3. Dispatch Command
     auto it = COMMAND_DISPATCHER.find(command);
-    if (it != COMMAND_DISPATCHER.end()) {
+    if (it != COMMAND_DISPATCHER.end())
+    {
       // 只有确认是支持的命令后，才尝试获取 payload
       // 如果此时没有 payload，.at() 抛出异常是合理的（参数缺失）
       // 如果这里为了健壮性，也可以使用 .value("payload", json({})) 传入空对象
-      if (!request_json.contains("payload")) {
+      if (!request_json.contains("payload"))
+      {
         // 这里可以选择抛出更友好的错误，或者让 .at() 抛出标准 json 错误
         // 为了简单，我们直接调用 .at，如果缺 payload 会抛 "key 'payload' not found"
         // 这对于已知命令参数缺失是正确的行为。
@@ -144,15 +148,19 @@ std::string handle_session_request(
 
       const auto& payload = request_json.at("payload");
       it->second(payload, response_json, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
-    } else {
+    }
+    else
+    {
       // 4. Handle Unknown Command (这就是测试用例期待的路径)
       throw std::runtime_error("Unknown command: " + command);
     }
-
-  } catch (const std::exception& e) {
+  }
+  catch (const std::exception& e)
+  {
     response_json["status"] = "error";
     response_json["error_message"] = e.what();
-    if (!req_id.empty()) {
+    if (!req_id.empty())
+    {
       response_json["request_id"] = req_id;
     }
   }
@@ -193,11 +201,6 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   LibManager lib_manager;
   FfiDispatcher ffi_dispatcher(struct_manager, &callback_manager);
 
-  {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    // std::cout << "[Executor] New session started in thread " << std::this_thread::get_id() << std::endl;
-  }
-
   while (connection->isOpen())
   {
     std::string request_str = connection->read();
@@ -227,11 +230,6 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
       std::cerr << "[Executor] Failed to write response. Connection lost." << std::endl;
       break;
     }
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    // std::cout << "[Executor] Session ended. Resources cleaned up." << std::endl;
   }
 }
 
