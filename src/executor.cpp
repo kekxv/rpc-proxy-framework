@@ -183,13 +183,11 @@ Executor::~Executor()
 
 void Executor::stop()
 {
+  is_running_ = false; // Set the flag to signal the run loop to stop
   if (server)
   {
-    server->stop();
+    server->stop(); // Interrupt any blocking accept() call
   }
-  // 注意：detach 的线程会随进程结束，或者在处理完当前连接后自动退出。
-  // 如果需要强制所有线程立即停止，需要在 ClientConnection 中实现强制关闭，
-  // 并维护一个线程列表进行管理。这里采用简单的 detach 模式。
 }
 
 // 处理单个客户端会话的逻辑（在独立线程中运行）
@@ -201,12 +199,12 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   LibManager lib_manager;
   FfiDispatcher ffi_dispatcher(struct_manager, &callback_manager);
 
-  while (connection->isOpen())
+  while (is_running_ && connection->isOpen()) // Also check is_running_ here
   {
     std::string request_str = connection->read();
     if (request_str.empty())
     {
-      break; // Client disconnected
+      break; // Client disconnected or server is stopping
     }
 
     std::string response_str;
@@ -235,31 +233,27 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
 
 void Executor::run(const std::string& pipe_name)
 {
+  is_running_ = true;
   server->listen(pipe_name);
 
   std::cout << "Executor service listening on: " << pipe_name << std::endl;
 
-  while (true)
+  while (is_running_) // Use the atomic flag as the loop condition
   {
     // 1. Accept a new connection (Blocking)
     std::unique_ptr<ClientConnection> connection = server->accept();
 
-    if (!connection)
+    if (!is_running_ || !connection)
     {
-      std::cout << "Accept returned null, server stopping..." << std::endl;
+      // If the loop should stop or accept failed, break out
+      std::cout << "Executor run loop is stopping..." << std::endl;
       break;
     }
 
     // 2. Spawn a new thread to handle this client
-    // 使用 std::thread 将连接的所有权转移到新线程中
     std::thread([this, conn = std::move(connection)]() mutable
     {
       this->handle_client_session(std::move(conn));
     }).detach();
-
-    // 注意：这里使用了 detach()。这意味着线程将在后台独立运行。
-    // 优点：代码简单，不需要维护线程列表。
-    // 缺点：在 Executor 析构时，无法显式等待这些线程结束。
-    // 对于这种服务型应用，这通常是可以接受的，或者依赖操作系统在进程退出时清理。
   }
 }

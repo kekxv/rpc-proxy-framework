@@ -197,21 +197,28 @@ public:
   std::unique_ptr<ClientConnection> accept() override
   {
     HANDLE hPipe = CreateNamedPipeA(pipe_name_.c_str(), PIPE_ACCESS_DUPLEX,
-                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 4096, 4096, 0, NULL);
+                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, NULL);
+    
     if (hPipe == INVALID_HANDLE_VALUE)
     {
-      throw std::runtime_error("Failed to create named pipe for listening.");
+        std::cerr << "[TID:" << std::this_thread::get_id() << "][Server] CreateNamedPipeA failed with error: " << GetLastError() << std::endl;
+        // throw is too aggressive in a loop, let's return null and let the runner decide.
+        return nullptr;
     }
     listener_pipe_ = hPipe;
 
-    std::cout << "Waiting for client connection on " << pipe_name_ << "..." << std::endl;
-    if (ConnectNamedPipe(hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED))
+
+    BOOL connected = ConnectNamedPipe(hPipe, NULL);
+    if (!connected && GetLastError() == ERROR_PIPE_CONNECTED) {
+        connected = TRUE;
+    }
+
+    if (connected)
     {
-      std::cout << "Client connected." << std::endl;
       listener_pipe_ = INVALID_HANDLE_VALUE;
       return std::make_unique<WindowsConnection>(hPipe);
     }
-
+    
     CloseHandle(hPipe);
     listener_pipe_ = INVALID_HANDLE_VALUE;
     return nullptr;
@@ -219,10 +226,27 @@ public:
 
   void stop() override
   {
-    if (listener_pipe_ != INVALID_HANDLE_VALUE)
-    {
-      CloseHandle(listener_pipe_);
-      listener_pipe_ = INVALID_HANDLE_VALUE;
+    // To reliably unblock ConnectNamedPipe, we connect to ourselves with a dummy client.
+    // This is more robust than just closing the handle from another thread.
+    HANDLE hPipe = CreateFileA(
+        pipe_name_.c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+    );
+
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        // Just connect and immediately close. The goal is just to unblock the listener.
+        CloseHandle(hPipe);
+    } else {
+        if (listener_pipe_ != INVALID_HANDLE_VALUE)
+        {
+          CloseHandle(listener_pipe_);
+          listener_pipe_ = INVALID_HANDLE_VALUE;
+        }
     }
   }
 

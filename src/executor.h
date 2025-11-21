@@ -3,6 +3,8 @@
 
 #include <string>
 #include <memory>
+#include <atomic>
+
 // Forward declarations
 class IpcServer;
 class ClientConnection;
@@ -18,6 +20,7 @@ public:
 
 private:
   std::unique_ptr<IpcServer> server;
+  std::atomic<bool> is_running_{false};
 
   // 新增私有方法，用于线程函数
   void handle_client_session(std::unique_ptr<ClientConnection> connection);
