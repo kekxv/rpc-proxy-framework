@@ -53,29 +53,42 @@ public:
       std::cout << "[Client " << client_id_ << "] Connecting to " << full_pipe_name << "..." << std::endl;
     }
 
-    if (!WaitNamedPipeA(full_pipe_name.c_str(), 2000))
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(3)) // Retry for up to 3 seconds
     {
-      std::lock_guard<std::mutex> lock(g_test_log_mutex);
-      std::cout << "[Client " << client_id_ << "] WaitNamedPipeA failed with error: " << GetLastError() << std::endl;
-    }
+      pipe_handle_ = CreateFileA(
+        full_pipe_name.c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0, NULL, OPEN_EXISTING, 0, NULL);
 
-    pipe_handle_ = CreateFileA(
-      full_pipe_name.c_str(),
-      GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-
-    bool success = pipe_handle_ != INVALID_HANDLE_VALUE;
-    {
-      std::lock_guard<std::mutex> lock(g_test_log_mutex);
-      if (success)
+      if (pipe_handle_ != INVALID_HANDLE_VALUE)
       {
+        // Success!
+        std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Client " << client_id_ << "] CreateFileA succeeded. Handle: " << pipe_handle_ << std::endl;
+        return true;
       }
-      else
+
+      DWORD last_error = GetLastError();
+      if (last_error == ERROR_PIPE_BUSY)
       {
-        std::cout << "[Client " << client_id_ << "] CreateFileA failed with error: " << GetLastError() << std::endl;
+        // This is expected when multiple clients race for a new pipe instance.
+        // Wait a bit and retry.
+        Sleep(50);
+        continue;
       }
+
+      // For other errors, log it and fail.
+      std::lock_guard<std::mutex> lock(g_test_log_mutex);
+      std::cerr << "[Client " << client_id_ << "] CreateFileA failed with unrecoverable error: " << last_error <<
+        std::endl;
+      return false;
     }
-    return success;
+
+    // If we exit the loop, it means we timed out.
+    std::lock_guard<std::mutex> lock(g_test_log_mutex);
+    std::cerr << "[Client " << client_id_ << "] Connection attempt timed out after 3 seconds." << std::endl;
+    return false;
 #else
     socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (socket_fd_ < 0) return false;
