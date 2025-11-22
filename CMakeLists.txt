@@ -4,6 +4,7 @@ project(rpc-proxy-framework CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(BUILD_SHARED_LIBS OFF)
 set(JSONCPP_WITH_TESTS OFF)
 set(JSONCPP_WITH_POST_BUILD_UNITTEST OFF)
 
@@ -104,7 +105,7 @@ target_include_directories(executor_core PUBLIC
 target_link_libraries(executor_core PRIVATE
         ${FFI_LIBRARIES}
         stduuid # 链接 stduuid 接口库
-        jsoncpp_lib
+        jsoncpp_lib_static
 )
 
 # --- 平台特定的链接 ---
