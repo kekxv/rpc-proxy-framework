@@ -105,7 +105,7 @@ target_include_directories(executor_core PUBLIC
 target_link_libraries(executor_core PRIVATE
         ${FFI_LIBRARIES}
         stduuid # 链接 stduuid 接口库
-        jsoncpp_lib_static
+        jsoncpp_static
 )
 
 # --- 平台特定的链接 ---

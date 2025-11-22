@@ -25,7 +25,7 @@ target_include_directories(cpp_controller_example PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../../
 )
 
-target_link_libraries(cpp_controller_example PRIVATE jsoncpp_lib_static)
+target_link_libraries(cpp_controller_example PRIVATE jsoncpp_static)
 
 # 平台特定的链接
 if(UNIX AND NOT APPLE)
