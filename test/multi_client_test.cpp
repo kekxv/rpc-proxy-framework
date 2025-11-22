@@ -25,21 +25,24 @@ using json = Json::Value;
 static std::mutex g_test_log_mutex;
 
 // --- Helper Functions for JSON ---
-std::string json_dump(const json& j) {
-    Json::StreamWriterBuilder writer;
-    writer["indentation"] = "";
-    return Json::writeString(writer, j);
+std::string json_dump(const json& j)
+{
+  Json::StreamWriterBuilder writer;
+  writer["indentation"] = "";
+  return Json::writeString(writer, j);
 }
 
-json json_parse(const std::string& s) {
-    json j;
-    Json::CharReaderBuilder builder;
-    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    std::string errs;
-    if (!reader->parse(s.data(), s.data() + s.size(), &j, &errs)) {
-        return json(); 
-    }
-    return j;
+json json_parse(const std::string& s)
+{
+  json j;
+  Json::CharReaderBuilder builder;
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  std::string errs;
+  if (!reader->parse(s.data(), s.data() + s.size(), &j, &errs))
+  {
+    return json();
+  }
+  return j;
 }
 
 // --- Test Configuration ---
@@ -65,7 +68,7 @@ public:
   bool connect(const std::string& name)
   {
 #ifdef _WIN32
-    std::string full_pipe_name = "\\.\pipe\" + name;
+    std::string full_pipe_name = "\\\\.\\pipe\\" + name;
     {
       std::lock_guard<std::mutex> lock(g_test_log_mutex);
       std::cout << "[Client " << client_id_ << "] Connecting to " << full_pipe_name << "..." << std::endl;
@@ -105,8 +108,7 @@ public:
 
     // If we exit the loop, it means we timed out.
     std::lock_guard<std::mutex> lock(g_test_log_mutex);
-    std::cerr << "[Client " << client_id_ << "] Connection attempt timed out after 3 seconds."
-;    return false;
+    std::cerr << "[Client " << client_id_ << "] Connection attempt timed out after 3 seconds."; return false;
 #else
     socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (socket_fd_ < 0) return false;
@@ -219,8 +221,7 @@ protected:
     {
       {
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
-        std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " started. Calling run()."
-;
+        std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " started. Calling run().";
       }
       executor_->run(PIPE_NAME);
       {
@@ -320,8 +321,18 @@ bool run_client_session(int client_id, const std::string& lib_path)
   call_req["payload"]["return_type"] = "int32";
 
   json args(Json::arrayValue);
-  { json arg; arg["type"] = "int32"; arg["value"] = a; args.append(arg); }
-  { json arg; arg["type"] = "int32"; arg["value"] = b; args.append(arg); }
+  {
+    json arg;
+    arg["type"] = "int32";
+    arg["value"] = a;
+    args.append(arg);
+  }
+  {
+    json arg;
+    arg["type"] = "int32";
+    arg["value"] = b;
+    args.append(arg);
+  }
   call_req["payload"]["args"] = args;
 
   if (!client.send_request(json_dump(call_req)))
@@ -341,7 +352,8 @@ bool run_client_session(int client_id, const std::string& lib_path)
   if (call_resp["status"].asString() != "success" || call_resp["data"]["return"]["value"].asInt() != (a + b))
   {
     std::lock_guard<std::mutex> lock(g_test_log_mutex);
-    std::cerr << "[Client " << client_id << "] Function call failed or returned wrong value: " << json_dump(call_resp) <<
+    std::cerr << "[Client " << client_id << "] Function call failed or returned wrong value: " << json_dump(call_resp)
+      <<
       std::endl;
     return false;
   }

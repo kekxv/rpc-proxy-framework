@@ -72,7 +72,7 @@ public:
   void connect()
   {
 #ifdef _WIN32
-    std::string pipe_path = "\\.\pipe\" + pipe_name_;
+    std::string pipe_path = "\\\\.\\pipe\\" + pipe_name_;
     sock_ = CreateFileA(pipe_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (sock_ == INVALID_SOCKET)
     {
