@@ -29,8 +29,9 @@
 #include <atomic>
 #include <queue>
 #include <vector>
+#include <json/json.h>
 
-using json = nlohmann::json;
+using json = Json::Value;
 
 // -----------------------------------------------------------------------------
 // Mock Classes & Setup
@@ -39,11 +40,11 @@ using json = nlohmann::json;
 class DummyClientConnection : public ClientConnection
 {
 public:
-  nlohmann::json last_event;
+  json last_event;
   std::string read() override { return ""; }
   bool write(const std::string& message) override { return true; }
 
-  bool sendEvent(const nlohmann::json& event_json) override
+  bool sendEvent(const json& event_json) override
   {
     last_event = event_json;
     return true;
@@ -72,10 +73,14 @@ protected:
 
   void SetUp() override
   {
-    json point_def = {{{"name", "x"}, {"type", "int32"}}, {{"name", "y"}, {"type", "int32"}}};
+    json point_def(Json::arrayValue);
+    { json m; m["name"]="x"; m["type"]="int32"; point_def.append(m); }
+    { json m; m["name"]="y"; m["type"]="int32"; point_def.append(m); }
     struct_manager.register_struct("Point", point_def);
 
-    json line_def = {{{"name", "p1"}, {"type", "Point"}}, {{"name", "p2"}, {"type", "Point"}}};
+    json line_def(Json::arrayValue);
+    { json m; m["name"]="p1"; m["type"]="Point"; line_def.append(m); }
+    { json m; m["name"]="p2"; m["type"]="Point"; line_def.append(m); }
     struct_manager.register_struct("Line", line_def);
 
 #ifdef _WIN32
@@ -90,23 +95,15 @@ protected:
 #else
     std::string lib_path = "../test_lib/my_lib.dylib";
 #endif
-    // 尝试加载库，允许失败（如果路径不对），避免直接 assert 导致调试困难
     try
     {
       test_lib_id = lib_manager.load_library(lib_path);
     }
     catch (...)
     {
-      // Fallback
       lib_path = "cmake-build-debug/test_lib/my_lib.dylib";
       try { test_lib_id = lib_manager.load_library(lib_path); }
-      catch (...)
-      {
-      }
-    }
-    if (test_lib_id.empty())
-    {
-      // std::cerr << "Warning: Could not load test library. Some tests might fail." << std::endl;
+      catch (...) {}
     }
   }
 
@@ -116,138 +113,182 @@ protected:
   }
 };
 
-// ... (Tests for ExecutorTest: BasicAddFunction, GreetFunction, etc. remain the same) ...
-// 为了节省篇幅，这里省略 ExecutorTest 的具体测试用例，保留你原有的即可。
-// 它们是单测，不涉及多线程/IPC，通常不会崩。
-
 TEST_F(ExecutorTest, BasicAddFunction)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "add"}, {"return_type", "int32"},
-    {"args", {{{"type", "int32"}, {"value", 10}}, {{"type", "int32"}, {"value", 20}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "add";
+  payload["return_type"] = "int32";
+  
+  json args(Json::arrayValue);
+  { json a; a["type"]="int32"; a["value"]=10; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=20; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "add"), payload);
-  ASSERT_EQ(result["return"]["value"], 30);
+  ASSERT_EQ(result["return"]["value"].asInt(), 30);
 }
 
 TEST_F(ExecutorTest, GreetFunction)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "greet"}, {"return_type", "string"},
-    {"args", {{{"type", "string"}, {"value", "World"}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "greet";
+  payload["return_type"] = "string";
+  
+  json args(Json::arrayValue);
+  { json a; a["type"]="string"; a["value"]="World"; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "greet"), payload);
-  ASSERT_EQ(result["return"]["value"], "Hello, World");
+  ASSERT_EQ(result["return"]["value"].asString(), "Hello, World");
 }
 
 TEST_F(ExecutorTest, ProcessPointByVal)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "process_point_by_val"}, {"return_type", "int32"},
-    {"args", {{{"type", "Point"}, {"value", {{"x", 10}, {"y", 20}}}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "process_point_by_val";
+  payload["return_type"] = "int32";
+
+  json p_val; p_val["x"]=10; p_val["y"]=20;
+  json args(Json::arrayValue);
+  { json a; a["type"]="Point"; a["value"]=p_val; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_val"), payload);
-  ASSERT_EQ(result["return"]["value"], 30);
+  ASSERT_EQ(result["return"]["value"].asInt(), 30);
 }
 
 TEST_F(ExecutorTest, ProcessPointByPtr)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "process_point_by_ptr"}, {"return_type", "int32"},
-    {"args", {{{"type", "pointer"}, {"target_type", "Point"}, {"value", {{"x", 5}, {"y", 6}}}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "process_point_by_ptr";
+  payload["return_type"] = "int32";
+
+  json p_val; p_val["x"]=5; p_val["y"]=6;
+  json args(Json::arrayValue);
+  { json a; a["type"]="pointer"; a["target_type"]="Point"; a["value"]=p_val; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_point_by_ptr"), payload);
-  ASSERT_EQ(result["return"]["value"], 11);
+  ASSERT_EQ(result["return"]["value"].asInt(), 11);
 }
 
 TEST_F(ExecutorTest, CreatePoint)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "create_point"}, {"return_type", "Point"},
-    {"args", {{{"type", "int32"}, {"value", 100}}, {{"type", "int32"}, {"value", 200}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "create_point";
+  payload["return_type"] = "Point";
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="int32"; a["value"]=100; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=200; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_point"), payload);
-  ASSERT_EQ(result["return"]["value"]["x"], 100);
+  ASSERT_EQ(result["return"]["value"]["x"].asInt(), 100);
 }
 
 TEST_F(ExecutorTest, GetLineLength)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "get_line_length"}, {"return_type", "int32"},
-    {"args", {{{"type", "Line"}, {"value", {{"p1", {{"x", 1}, {"y", 2}}}, {"p2", {{"x", 3}, {"y", 4}}}}}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "get_line_length";
+  payload["return_type"] = "int32";
+
+  json p1; p1["x"]=1; p1["y"]=2;
+  json p2; p2["x"]=3; p2["y"]=4;
+  json l_val; l_val["p1"]=p1; l_val["p2"]=p2;
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="Line"; a["value"]=l_val; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "get_line_length"), payload);
-  ASSERT_EQ(result["return"]["value"], 10);
+  ASSERT_EQ(result["return"]["value"].asInt(), 10);
 }
 
 TEST_F(ExecutorTest, SumPoints)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "sum_points"}, {"return_type", "int32"},
-    {
-      "args",
-      {
-        {
-          {"type", "pointer"}, {"target_type", "Point[]"},
-          {"value", {{{"x", 1}, {"y", 1}}, {{"x", 2}, {"y", 2}}, {{"x", 3}, {"y", 3}}}}
-        },
-        {{"type", "int32"}, {"value", 3}}
-      }
-    }
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "sum_points";
+  payload["return_type"] = "int32";
+
+  json points(Json::arrayValue);
+  { json p; p["x"]=1; p["y"]=1; points.append(p); }
+  { json p; p["x"]=2; p["y"]=2; points.append(p); }
+  { json p; p["x"]=3; p["y"]=3; points.append(p); }
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="pointer"; a["target_type"]="Point[]"; a["value"]=points; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=3; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "sum_points"), payload);
-  ASSERT_EQ(result["return"]["value"], 12);
+  ASSERT_EQ(result["return"]["value"].asInt(), 12);
 }
 
 TEST_F(ExecutorTest, CreateLine)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "create_line"}, {"return_type", "Line"},
-    {
-      "args",
-      {
-        {{"type", "int32"}, {"value", 10}}, {{"type", "int32"}, {"value", 20}}, {{"type", "int32"}, {"value", 30}},
-        {{"type", "int32"}, {"value", 40}}
-      }
-    }
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "create_line";
+  payload["return_type"] = "Line";
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="int32"; a["value"]=10; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=20; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=30; args.append(a); }
+  { json a; a["type"]="int32"; a["value"]=40; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "create_line"), payload);
-  ASSERT_EQ(result["return"]["value"]["p1"]["x"], 10);
+  ASSERT_EQ(result["return"]["value"]["p1"]["x"].asInt(), 10);
 }
 
 TEST_F(ExecutorTest, CallbackFunction)
 {
   if (test_lib_id.empty()) return;
   std::string cb_id = callback_manager.registerCallback("void", {"string", "int32"});
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "call_my_callback"}, {"return_type", "void"},
-    {"args", {{{"type", "callback"}, {"value", cb_id}}, {{"type", "string"}, {"value", "Hello"}}}}
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "call_my_callback";
+  payload["return_type"] = "void";
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="callback"; a["value"]=cb_id; args.append(a); }
+  { json a; a["type"]="string"; a["value"]="Hello"; args.append(a); }
+  payload["args"] = args;
+
   ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "call_my_callback"), payload);
-  ASSERT_EQ(dummy_connection.last_event["event"], "invoke_callback");
+  ASSERT_EQ(dummy_connection.last_event["event"].asString(), "invoke_callback");
 }
 
 TEST_F(ExecutorTest, ProcessBufferInout)
 {
   if (test_lib_id.empty()) return;
-  json payload = {
-    {"library_id", test_lib_id}, {"function_name", "process_buffer_inout"}, {"return_type", "int32"},
-    {
-      "args",
-      {
-        {{"type", "buffer"}, {"direction", "inout"}, {"size", 64}, {"value", "BQ=="}},
-        {{"type", "pointer"}, {"target_type", "int32"}, {"direction", "inout"}, {"value", 64}}
-      }
-    }
-  };
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "process_buffer_inout";
+  payload["return_type"] = "int32";
+
+  json args(Json::arrayValue);
+  { json a; a["type"]="buffer"; a["direction"]="inout"; a["size"]=64; a["value"]="BQ=="; args.append(a); }
+  { json a; a["type"]="pointer"; a["target_type"]="int32"; a["direction"]="inout"; a["value"]=64; args.append(a); }
+  payload["args"] = args;
+
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload);
-  ASSERT_EQ(result["return"]["value"], 0);
+  ASSERT_EQ(result["return"]["value"].asInt(), 0);
 }

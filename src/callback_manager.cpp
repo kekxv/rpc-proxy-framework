@@ -152,13 +152,13 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
     return;
   }
 
-  nlohmann::json event_payload;
+  Json::Value event_payload;
   event_payload["callback_id"] = info->callback_id;
-  nlohmann::json args_json = nlohmann::json::array();
+  Json::Value args_json(Json::arrayValue);
 
   for (size_t i = 0; i < cif->nargs; ++i)
   {
-    nlohmann::json arg_data;
+    Json::Value arg_data;
     const std::string& type_name = info->arg_type_names[i];
     arg_data["type"] = type_name;
 
@@ -168,14 +168,15 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
     else if (type_name == "uint16") arg_data["value"] = *static_cast<uint16_t*>(args[i]);
     else if (type_name == "int32") arg_data["value"] = *static_cast<int32_t*>(args[i]);
     else if (type_name == "uint32") arg_data["value"] = *static_cast<uint32_t*>(args[i]);
-    else if (type_name == "int64") arg_data["value"] = *static_cast<int64_t*>(args[i]);
-    else if (type_name == "uint64") arg_data["value"] = *static_cast<uint64_t*>(args[i]);
+    else if (type_name == "int64") arg_data["value"] = (Json::Int64)*static_cast<int64_t*>(args[i]);
+    else if (type_name == "uint64") arg_data["value"] = (Json::UInt64)*static_cast<uint64_t*>(args[i]);
     else if (type_name == "float") arg_data["value"] = *static_cast<float*>(args[i]);
     else if (type_name == "double") arg_data["value"] = *static_cast<double*>(args[i]);
     else if (type_name == "string")
     {
       char* str_ptr = *static_cast<char**>(args[i]);
-      arg_data["value"] = (str_ptr ? std::string(str_ptr) : nullptr);
+      if (str_ptr) arg_data["value"] = std::string(str_ptr);
+      else arg_data["value"] = Json::nullValue;
     }
     else if (info->struct_manager->is_struct(type_name))
     {
@@ -184,18 +185,18 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
     }
     else if (type_name == "pointer")
     {
-      arg_data["value"] = reinterpret_cast<uintptr_t>(*static_cast<void**>(args[i]));
+      arg_data["value"] = (Json::UInt64)reinterpret_cast<uintptr_t>(*static_cast<void**>(args[i]));
     }
     else
     {
       std::cerr << "Warning: Unhandled FFI type in trampoline for argument " << i << std::endl;
-      arg_data["value"] = nullptr;
+      arg_data["value"] = Json::nullValue;
     }
-    args_json.push_back(arg_data);
+    args_json.append(arg_data);
   }
   event_payload["args"] = args_json;
 
-  nlohmann::json event_json;
+  Json::Value event_json;
   event_json["event"] = "invoke_callback";
   event_json["payload"] = event_payload;
 

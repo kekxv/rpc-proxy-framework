@@ -1,7 +1,7 @@
 #ifndef RPC_PROXY_FRAMEWORK_FFI_DISPATCHER_H
 #define RPC_PROXY_FRAMEWORK_FFI_DISPATCHER_H
 
-#include <nlohmann/json.hpp>
+#include <json/json.h>
 #include "struct_manager.h"
 #include "callback_manager.h" // Include CallbackManager
 #include <ffi.h>
@@ -12,7 +12,7 @@
 #include <cstdint> // Added for uintptr_t
 #include <cstring> // For memcpy
 
-using json = nlohmann::json;
+using json = Json::Value;
 
 // Forward declarations
 class CallbackManager;

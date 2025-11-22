@@ -3,7 +3,7 @@
 
 #include <string>
 #include <memory>
-#include <nlohmann/json.hpp>
+#include <json/json.h>
 
 // Represents a single client connection
 class ClientConnection {
@@ -11,7 +11,7 @@ public:
     virtual ~ClientConnection() = default;
     virtual std::string read() = 0;
     virtual bool write(const std::string& message) = 0;
-    virtual bool sendEvent(const nlohmann::json& event_json) = 0;
+    virtual bool sendEvent(const Json::Value& event_json) = 0;
     virtual bool isOpen() = 0;
 };
 

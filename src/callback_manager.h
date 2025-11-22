@@ -9,7 +9,7 @@
 #include <functional>
 
 #include <ffi.h>
-#include <nlohmann/json.hpp> // For JSON handling
+#include <json/json.h> // For JSON handling
 #include "ipc_server.h" // For ClientConnection
 #include "struct_manager.h" // To resolve struct types for callback arguments
 

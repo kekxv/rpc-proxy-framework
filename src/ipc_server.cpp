@@ -16,7 +16,7 @@
 #include <arpa/inet.h>
 #endif
 
-using json = nlohmann::json;
+using json = Json::Value;
 
 // --- Platform-specific Connection Implementations ---
 
@@ -74,7 +74,9 @@ public:
 
   bool sendEvent(const json& event_json) override
   {
-    return write(event_json.dump());
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    return write(Json::writeString(builder, event_json));
   }
 
   bool isOpen() override { return is_open_; }
@@ -156,7 +158,9 @@ public:
 
   bool sendEvent(const json& event_json) override
   {
-    return write(event_json.dump());
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    return write(Json::writeString(builder, event_json));
   }
 
   bool isOpen() override { return is_open_; }

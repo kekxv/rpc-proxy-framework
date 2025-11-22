@@ -5,10 +5,10 @@
 #include <vector>
 #include <map>
 #include <memory>
-#include <nlohmann/json.hpp>
+#include <json/json.h>
 #include <ffi.h>
 
-using json = nlohmann::json;
+using json = Json::Value;
 
 // 描述一个结构体成员的内存布局
 struct StructMember {
@@ -47,7 +47,7 @@ public:
     bool is_struct(const std::string& type_name) const;
 
     // 将内存中的结构体序列化为JSON对象
-    nlohmann::json serializeStruct(const std::string& struct_name, const void* struct_ptr) const;
+    Json::Value serializeStruct(const std::string& struct_name, const void* struct_ptr) const;
 
 private:
     // 将字符串类型名映射到FFI类型和尺寸/对齐信息

@@ -118,8 +118,8 @@ void StructManager::register_struct(const std::string& name, const json& definit
 
     for (const auto& member_json : definition) {
         StructMember member;
-        member.name = member_json.at("name").get<std::string>();
-        member.type_name = member_json.at("type").get<std::string>();
+        member.name = member_json["name"].asString();
+        member.type_name = member_json["type"].asString();
 
         member.ffi_type_ptr = get_ffi_type_from_string(member.type_name);
         member.size = get_size_from_string(member.type_name);
@@ -182,9 +182,9 @@ bool StructManager::is_struct(const std::string& type_name) const {
 
 // Helper function to read a value from memory and convert to JSON
 // This is a recursive function to handle nested structs
-nlohmann::json read_value_from_memory_to_json(const void* ptr, const std::string& type_name, const StructManager& sm) {
+Json::Value read_value_from_memory_to_json(const void* ptr, const std::string& type_name, const StructManager& sm) {
     if (ptr == nullptr) {
-        return nullptr; // Represent null pointers as JSON null
+        return Json::nullValue; // Represent null pointers as JSON null
     }
 
     // Handle basic types
@@ -194,16 +194,19 @@ nlohmann::json read_value_from_memory_to_json(const void* ptr, const std::string
     if (type_name == "uint16") return *static_cast<const uint16_t*>(ptr);
     if (type_name == "int32") return *static_cast<const int32_t*>(ptr);
     if (type_name == "uint32") return *static_cast<const uint32_t*>(ptr);
-    if (type_name == "int64") return *static_cast<const int64_t*>(ptr);
-    if (type_name == "uint64") return *static_cast<const uint64_t*>(ptr);
+    if (type_name == "int64") return (Json::Int64)*static_cast<const int64_t*>(ptr);
+    if (type_name == "uint64") return (Json::UInt64)*static_cast<const uint64_t*>(ptr);
     if (type_name == "float") return *static_cast<const float*>(ptr);
     if (type_name == "double") return *static_cast<const double*>(ptr);
     if (type_name == "string") {
         const char* str_ptr = *static_cast<const char* const*>(ptr);
-        return (str_ptr ? std::string(str_ptr) : nullptr);
+        if (str_ptr) {
+            return std::string(str_ptr);
+        }
+        return Json::Value(Json::nullValue);
     }
     if (type_name == "pointer") {
-        return reinterpret_cast<uintptr_t>(*static_cast<const void* const*>(ptr));
+        return (Json::UInt64)reinterpret_cast<uintptr_t>(*static_cast<const void* const*>(ptr));
     }
 
     // Handle registered structs
@@ -212,7 +215,7 @@ nlohmann::json read_value_from_memory_to_json(const void* ptr, const std::string
         if (!layout) {
             throw std::runtime_error("Struct layout not found for type: " + type_name);
         }
-        nlohmann::json struct_json;
+        Json::Value struct_json;
         for (const auto& member_layout : layout->members) {
             const char* member_ptr = static_cast<const char*>(ptr) + member_layout.offset;
             struct_json[member_layout.name] = read_value_from_memory_to_json(member_ptr, member_layout.type_name, sm);
@@ -223,7 +226,7 @@ nlohmann::json read_value_from_memory_to_json(const void* ptr, const std::string
     throw std::runtime_error("Unhandled type for JSON serialization from memory: " + type_name);
 }
 
-nlohmann::json StructManager::serializeStruct(const std::string& struct_name, const void* struct_ptr) const {
+Json::Value StructManager::serializeStruct(const std::string& struct_name, const void* struct_ptr) const {
     if (!is_struct(struct_name)) {
         throw std::runtime_error("Struct '" + struct_name + "' is not registered.");
     }

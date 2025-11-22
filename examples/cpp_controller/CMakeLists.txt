@@ -5,13 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 
-# --- 添加 JSON 库 (nlohmann/json) ---
+# --- Add JsonCpp ---
 FetchContent_Declare(
-        json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3
+  jsoncpp
+  GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp.git
+  GIT_TAG        1.9.6
 )
-FetchContent_MakeAvailable(json)
+FetchContent_MakeAvailable(jsoncpp)
 
 
 add_executable(cpp_controller_example
@@ -21,9 +21,11 @@ add_executable(cpp_controller_example
 
 
 target_include_directories(cpp_controller_example PUBLIC
-        ${json_SOURCE_DIR}/include
+        ${jsoncpp_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../../
 )
+
+target_link_libraries(cpp_controller_example PRIVATE jsoncpp_lib)
 
 # 平台特定的链接
 if(UNIX AND NOT APPLE)

@@ -4,6 +4,9 @@ project(rpc-proxy-framework CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(JSONCPP_WITH_TESTS OFF)
+set(JSONCPP_WITH_POST_BUILD_UNITTEST OFF)
+
 # 设定 MSVC 的运行时库为静态链接
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
@@ -44,13 +47,13 @@ else ()
     message(FATAL_ERROR "Unsupported platform for libffi detection.")
 endif ()
 
-# --- 添加 JSON 库 (nlohmann/json) ---
+# --- 添加 JsonCpp 库 ---
 FetchContent_Declare(
-        json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3
+        jsoncpp
+        GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp.git
+        GIT_TAG        1.9.6
 )
-FetchContent_MakeAvailable(json)
+FetchContent_MakeAvailable(jsoncpp)
 
 # --- 添加 GSL-lite 库 (stduuid 的依赖) ---
 FetchContent_Declare(
@@ -92,7 +95,7 @@ target_include_directories(executor_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/utils # Add utils directory
         ${FFI_INCLUDE_DIRS}
-        ${json_SOURCE_DIR}/include
+        ${jsoncpp_SOURCE_DIR}/include
         ${gsl-lite_SOURCE_DIR}/include # 添加 gsl-lite
         ${stduuid_SOURCE_DIR}          # 添加 stduuid 根目录以查找 gsl
         ${stduuid_SOURCE_DIR}/include # 添加 stduuid
@@ -101,6 +104,7 @@ target_include_directories(executor_core PUBLIC
 target_link_libraries(executor_core PRIVATE
         ${FFI_LIBRARIES}
         stduuid # 链接 stduuid 接口库
+        jsoncpp_lib
 )
 
 # --- 平台特定的链接 ---
