@@ -89,7 +89,7 @@
 ### 请求 (Request)
 ```json5
 {
-  "command": "load_library | unload_library | register_struct | call_function",
+  "command": "load_library | unload_library | register_struct | unregister_struct | register_callback | unregister_callback | call_function",
   "request_id": "unique_id_for_tracking",
   "payload": {
     // ... command-specific data
@@ -107,6 +107,31 @@
   }
 }
 ```
+
+#### `register_callback` 示例
+```json
+{
+  "command": "register_callback",
+  "request_id": "req-002",
+  "payload": {
+    "return_type": "void",
+    "args_type": ["string", "int32"]
+  }
+}
+```
+> **定义说明**: `register_callback` 用于向 `executor` 注册一个回调签名。`executor` 会为此签名生成一个唯一的 `callback_id` 并返回给 `controller`。`return_type` 是回调函数的返回类型，`args_type` 是回调函数接受的参数类型列表。
+
+#### `unregister_callback` 示例
+```json
+{
+  "command": "unregister_callback",
+  "request_id": "req-00X",
+  "payload": {
+    "callback_id": "cb-uuid-456"
+  }
+}
+```
+> **定义说明**: `unregister_callback` 用于从 `executor` 注销一个回调。
 
 #### `register_struct` 示例
 ```json
@@ -140,7 +165,7 @@
   }
 }
 ```
-> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
+> **类型说明**: `type` 字段可以是 `void`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `string` (对应 `char*`), `pointer`, `callback`, `buffer`。当 `type` 为 `pointer` 时，`value` 可以是结构体或结构体数组，也可以是基本类型数组。当 `type` 为 `buffer` 时，需要额外指定 `direction` (in, out, inout) 和 `size` (缓冲区大小)。**此外，`type` 字段也可以是任何已通过 `register_struct` 命令注册的结构体名称。**
 >
 > **结构体参数示例**: 
 > ```json
@@ -149,7 +174,7 @@
 >   "value": {"x": 10, "y": 20}
 > }
 > ```
-> **结构体指针参数示例**: 
+> **结构体指针参数示例**:
 > 当需要传递结构体指针时，`type` 字段应为 `"pointer"`，而 `value` 字段则包含一个描述实际结构体数据的对象，其中 `type` 字段指定了指针指向的结构体类型。
 > ```json
 > {
@@ -160,7 +185,25 @@
 >   }
 > }
 > ```
-
+> **回调参数示例**:
+> 当需要传递回调函数时，`type` 字段应为 `"callback"`，`value` 字段是先前通过 `register_callback` 获取的 `callback_id`。
+> ```json
+> {
+>   "type": "callback",
+>   "value": "cb-uuid-456"
+> }
+> ```
+>
+> **buffer 参数示例**:
+> 当需要传递缓冲区时，`type` 字段应为 `"buffer"`，`value` 字段是 Base64 编码的二进制数据。`direction` 字段指定了缓冲区在函数调用中的方向 (in, out, inout)。`size` 字段指定了缓冲区的最大容量。
+> ```json
+> {
+>   "type": "buffer",
+>   "direction": "inout",
+>   "size": 1024,
+>   "value": "SGVsbG8gd29ybGQ=" // Base64 encoded "Hello world"
+> }
+> ```
 ### 响应 (Response)
 ```json5
 {
@@ -215,6 +258,37 @@
 >   }
 > }
 > ```
+
+## 6.1. 异步事件 (Asynchronous Events)
+
+为了支持回调函数，通信模型扩展为双向的。`executor` 可以在任何时候主动向 `controller` 发送事件。这些事件没有 `request_id`，因为它们不是对某个请求的响应。
+
+### 事件 (Event)
+```json
+{
+  "event": "invoke_callback",
+  "payload": {
+    // ... event-specific data
+  }
+}
+```
+
+#### `invoke_callback` 事件示例
+当一个注册过的回调函数被动态库中的代码调用时，`executor` 会向 `controller` 发送此事件。
+
+```json
+{
+  "event": "invoke_callback",
+  "payload": {
+    "callback_id": "cb-uuid-456",
+    "args": [
+      { "type": "string", "value": "Message from native code" },
+      { "type": "int32", "value": 123 }
+    ]
+  }
+}
+```
+> **事件说明**: `callback_id` 标识了哪个已注册的回调被触发。`args` 数组包含了调用时传递给回调函数的实际参数值。`controller` 接收到此事件后，可以根据 `callback_id` 执行其本地对应的逻辑。
 
 ## 7. 跨平台实现要点
 
@@ -283,9 +357,6 @@ endif()
 
 ```
 rpc-proxy-framework/
-├── .github/
-│   └── workflows/
-│       └── test_examples.yml  # GitHub Actions workflow for testing examples
 ├── CMakeLists.txt
 ├── src/
 │   ├── main.cpp             # 程序入口, 解析命令行参数
@@ -293,10 +364,14 @@ rpc-proxy-framework/
 │   ├── ipc_server.h/.cpp    # IPC 服务端实现 (跨平台抽象)
 │   ├── lib_manager.h/.cpp   # 动态库管理器
 │   ├── ffi_dispatcher.h/.cpp  # FFI 调用分发器
-│   └── struct_manager.h/.cpp  # 结构体管理器
+│   ├── struct_manager.h/.cpp  # 结构体管理器
+│   ├── callback_manager.h/.cpp # 回调管理器
 ├── platform/                  # (可选) 存放平台特定代码的头文件
 │   ├── common.h
 │   └── ...
+├── utils/                     # 工具类
+│   ├── base64.cpp             # Base64 编解码实现
+│   └── base64.h               # Base64 编解码头文件
 ├── examples/                  # 示例控制器
 │   ├── python_controller/
 │   │   └── controller.py      # Python 示例控制器
@@ -306,8 +381,11 @@ rpc-proxy-framework/
 │   │       └── main/
 │   │           └── java/
 │   │               └── com/
-│   │                   └── example/
-│   │                       └── App.java # Java 示例控制器代码
+│   │                   └── kekxv/ # 示例 Java 包结构
+│   │                       ├── App.java
+│   │                       ├── MultiClientApp.java
+│   │                       └── rpc/
+│   │                           └── RpcClient.java
 │   └── cpp_controller/
 │       ├── CMakeLists.txt     # C++ 示例 CMake 配置
 │       └── cpp_controller_example.cpp # C++ 示例控制器代码
@@ -330,8 +408,7 @@ rpc-proxy-framework/
 
 *   **错误处理**: 完善错误处理机制，特别是捕获被调用函数中的段错误（Segmentation Fault）等致命异常，防止 `executor` 崩溃。
 *   **安全性**: 当前模型下，`executor` 可以执行任何代码，存在巨大安全风险。应在受信任的环境中使用，或考虑使用容器/沙箱技术隔离`executor`进程。
-*   **回调函数支持**: 当前设计为同步请求/响应，回调函数需要异步、双向通信，这将是架构上的重大改变。
-*   **复杂类型支持**: 扩展协议以支持传递 C 结构体（struct）或回调函数（callback），这将显著增加复杂性。
+*   **回调函数支持**: 已实现。当前设计已升级为支持异步、双向通信的回调机制。
 *   **异步处理**: 当前设计为同步请求/响应，可升级为异步模型以提高吞吐量。
 
 ## 12. 使用说明 (Usage Instructions)
@@ -349,6 +426,7 @@ rpc-proxy-framework/
     *   **Debian/Ubuntu**: `sudo apt-get install libffi-dev`
     *   **CentOS/RHEL**: `sudo yum install libffi-devel`
 *   **Python 3**: 用于运行 `controller.py` 脚本。
+    *   **Windows**: `pip install pywin32`
 *   **Java Development Kit (JDK)**: 版本 8 或更高。
 *   **Maven 或 Gradle**: 用于构建 Java 示例。
 
@@ -387,7 +465,7 @@ make
 
 #### 终端 1: 启动 Executor
 
-在第一个终端中，进入 `build` 目录并启动 `executor`。它将创建一个名为 `my_pipe` 的IPC通道并等待连接。
+在第一个终端中，进入 `build` 目录并启动 `executor`。它将创建一个唯一的IPC通道并等待连接。
 
 ```bash
 # 确保当前在项目的 build 目录下
@@ -399,65 +477,41 @@ cd /path/to/rpc-proxy-framework/build
 您将看到类似以下的输出，表示 `executor` 正在监听：
 `Executor listening on pipe: my_pipe`
 
-**注意**: 在非Windows系统上，这会在 `/tmp/` 目录下创建一个名为 `my_pipe` 的socket文件。
+**注意**:
+*   在非Windows系统上，这会在 `/tmp/` 目录下创建一个名为 `my_pipe` 的Unix Domain Socket文件。如果 `executor` 未正常关闭，此文件可能残留，导致下次启动失败。此时请手动删除 `/tmp/my_pipe` 文件。
+*   您可以同时启动多个 `executor` 实例，只需为每个实例指定一个唯一的管道名称，例如 `./executor --pipe my_pipe_2`。
 
 #### 终端 2: 运行 Controller (Python)
 
-在第二个终端中，进入 `examples/python_controller` 目录，然后运行 `controller.py` 脚本，并传入相同的管道名称。
+Python 控制器 `controller.py` 位于 `examples/python_controller` 目录下。它演示了各种 RPC 调用功能，包括结构体传递、回调、缓冲区操作以及多客户端并发连接。
 
 ```bash
 # 确保当前在项目的根目录下
-cd examples/python_controller
+cd /path/to/rpc-proxy-framework
 
 # 运行 Python 控制器
-python3 controller.py my_pipe
+python3 examples/python_controller/controller.py my_pipe
 ```
 
-`controller.py` 脚本将自动执行以下操作：
+`controller.py` 脚本将自动执行以下一系列操作：
 1.  连接到 `executor`。
-2.  **注册 `Point` 结构体**。
+2.  **注册 `Point` 和 `Line` 结构体**。
 3.  请求加载 `test_lib/build/my_lib.so` 动态库。
-4.  请求调用库中的 `add(10, 20)` 函数。
-5.  请求调用库中的 `greet("World")` 函数。
-6.  **请求调用库中的 `process_point_by_val(Point {x=10, y=20})` 函数。**
-7.  **请求调用库中的 `process_point_by_ptr(Point {x=5, y=6})` 函数。**
-8.  **请求调用库中的 `create_point(100, 200)` 函数，并接收返回的 `Point` 结构体。**
-9.  打印出每次操作的请求、响应和最终结果。
+4.  调用 `add(10, 20)` 函数。
+5.  调用 `greet("World")` 函数。
+6.  调用 `process_point_by_val(Point {x=5, y=10})` 函数（按值传递结构体）。
+7.  调用 `process_point_by_ptr(Point {x=10, y=20})` 函数（按指针传递结构体）。
+8.  调用 `create_point(100, 200)` 函数，并接收返回的 `Point` 结构体。
+9.  调用 `get_line_length(Line)` 函数，演示嵌套结构体的使用。
+10. 调用 `sum_points(Point[], count)` 函数，演示结构体数组的传递。
+11. 调用 `create_line(...)` 函数，演示返回复杂结构体。
+12. **单次回调功能**: 注册回调，通过动态库触发回调，并验证事件接收。
+13. **多次回调功能**: 注册回调，通过动态库多次触发回调，并验证多个事件的接收。
+14. **缓冲区输入输出 (INOUT) 功能**: 调用 `process_buffer_inout` 函数，演示 Base64 编码的缓冲区传递，以及输出参数的接收。
+15. **多客户端并发测试**: 启动多个 `SimpleClient` 线程，每个线程独立连接到 `executor`，加载库并调用 `add` 函数，模拟并发场景。
 
-您应该能看到类似以下的输出：
-```
-Connecting to /tmp/my_pipe...
-Connected.
+您将看到详细的请求/响应日志和测试结果。
 
-Registering struct 'Point'
-Response: {'request_id': 'req-1', 'status': 'success'}
-
-Loading library: /path/to/rpc-proxy-framework/test_lib/build/my_lib.dylib
-Response: {'data': {'library_id': 'lib-a1b2c3d4-...'}, 'request_id': 'req-2', 'status': 'success'}
-Library loaded with ID: lib-a1b2c3d4-...
-
-Calling function 'add' with args (10, 20)
-Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-3', 'status': 'success'}
-Result of add(10, 20) is: 30
-
-Calling function 'greet' with arg ("World")
-Response: {'data': {'type': 'string', 'value': 'Hello, World'}, 'request_id': 'req-4', 'status': 'success'}
-Result of greet('World') is: 'Hello, World'
-
-Calling function 'process_point_by_val' with args (Point {x=10, y=20})
-Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-5', 'status': 'success'}
-Result of process_point_by_val is: 30
-
-Calling function 'process_point_by_ptr' with args (Point {x=5, y=6})
-Response: {'data': {'type': 'int32', 'value': 30}, 'request_id': 'req-6', 'status': 'success'}
-Result of process_point_by_ptr is: 30
-
-Calling function 'create_point' with args (100, 200)
-Response: {'data': {'type': 'Point', 'value': {'x': 100, 'y': 200}}, 'request_id': 'req-7', 'status': 'success'}
-Result of create_point is: {'x': 100, 'y': 200}
-
-Connection closed.
-```
 
 #### 终端 2: 运行 Controller (Java)
 
