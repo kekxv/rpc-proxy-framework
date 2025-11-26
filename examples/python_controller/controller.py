@@ -534,6 +534,107 @@ def test_process_buffer_inout(client, library_id):
   print(f"{Colors.GREEN}Buffer content verified (prefix: {expected_raw_output_prefix.hex()}, Size: {out_size_val}){Colors.RESET}")
 
 
+def test_dynamic_buffer_callback(client, library_id):
+  print(f"{Colors.BLUE}Registering dynamic buffer callback signature...{Colors.RESET}")
+  
+  # Signature: void callback(int type, unsigned char* data, int size, void* context)
+  args_type = [
+      "int32",
+      {"type": "buffer_ptr", "size_arg_index": 2},
+      "int32",
+      "pointer"
+  ]
+  
+  response = client.register_callback("void", args_type)
+  assert response["status"] == "success", f"Failed to register callback: {response.get('error_message')}"
+  callback_id = response["data"]["callback_id"]
+  print(f"{Colors.GREEN}Callback registered with ID: {callback_id}{Colors.RESET}")
+
+  print(f"{Colors.BLUE}Calling 'trigger_read_callback'...{Colors.RESET}")
+  test_str = "DynamicData123"
+  
+  args = [
+    {"type": "callback", "value": callback_id},
+    {"type": "int32", "value": 99},
+    {"type": "string", "value": test_str},
+    {"type": "pointer", "value": 0x1234}
+  ]
+  
+  response = client.call_function(library_id, "trigger_read_callback", "void", args)
+  assert response["status"] == "success", f"Failed to call 'trigger_read_callback': {response.get('error_message')}"
+
+  try:
+    event = client.event_queue.get(timeout=5)
+    assert event["event"] == "invoke_callback"
+    cb_args = event["payload"]["args"]
+    
+    assert cb_args[0]["value"] == 99
+    
+    # Verify buffer arg
+    assert cb_args[1]["type"] == "buffer_ptr"
+    b64_data = cb_args[1]["value"]
+    decoded = base64.b64decode(b64_data).decode('utf-8')
+    assert decoded == test_str, f"Expected '{test_str}', got '{decoded}'"
+    
+    assert cb_args[2]["value"] == len(test_str)
+    
+    print(f"{Colors.GREEN}Dynamic Buffer Callback Verified. Data: {decoded}{Colors.RESET}")
+    
+  except queue.Empty:
+    raise TimeoutError("Did not receive invoke_callback event within timeout.")
+
+  client.unregister_callback(callback_id)
+
+
+def test_fixed_buffer_callback(client, library_id):
+  print(f"{Colors.BLUE}Registering fixed buffer callback signature...{Colors.RESET}")
+  
+  # Signature: void callback(unsigned char* data, void* context)
+  # Fixed size 4 bytes
+  args_type = [
+      {"type": "buffer_ptr", "fixed_size": 4},
+      "pointer"
+  ]
+  
+  response = client.register_callback("void", args_type)
+  assert response["status"] == "success", f"Failed to register callback: {response.get('error_message')}"
+  callback_id = response["data"]["callback_id"]
+  print(f"{Colors.GREEN}Callback registered with ID: {callback_id}{Colors.RESET}")
+
+  print(f"{Colors.BLUE}Calling 'trigger_fixed_read_callback'...{Colors.RESET}")
+  
+  args = [
+    {"type": "callback", "value": callback_id},
+    {"type": "pointer", "value": 0x5678}
+  ]
+  
+  response = client.call_function(library_id, "trigger_fixed_read_callback", "void", args)
+  assert response["status"] == "success", f"Failed to call 'trigger_fixed_read_callback': {response.get('error_message')}"
+
+  try:
+    event = client.event_queue.get(timeout=5)
+    assert event["event"] == "invoke_callback"
+    cb_args = event["payload"]["args"]
+    
+    # Verify buffer arg
+    assert cb_args[0]["type"] == "buffer_ptr"
+    assert cb_args[0]["size"] == 4
+    
+    b64_data = cb_args[0]["value"]
+    decoded = base64.b64decode(b64_data)
+    
+    # Expected: 0xDE, 0xAD, 0xBE, 0xEF
+    expected_bytes = b'\xDE\xAD\xBE\xEF'
+    assert decoded == expected_bytes, f"Expected {expected_bytes.hex()}, got {decoded.hex()}"
+    
+    print(f"{Colors.GREEN}Fixed Buffer Callback Verified. Data hex: {decoded.hex()}{Colors.RESET}")
+    
+  except queue.Empty:
+    raise TimeoutError("Did not receive invoke_callback event within timeout.")
+
+  client.unregister_callback(callback_id)
+
+
 # --- 为 Windows 平台导入依赖 ---
 if platform.system() == "Windows":
   try:
@@ -785,6 +886,8 @@ def main():
     run_test(client, "Create Line Function", test_create_line, library_id)
     run_test(client, "Single Callback Functionality", test_callback_functionality, library_id) # Renamed
     run_test(client, "Multi-Callback Functionality", test_multi_callback_functionality, library_id) # New test
+    run_test(client, "Dynamic Buffer Callback Functionality", test_dynamic_buffer_callback, library_id) # New test
+    run_test(client, "Fixed Buffer Callback Functionality", test_fixed_buffer_callback, library_id) # New test
     run_test(client, "Process Buffer Inout Functionality", test_process_buffer_inout, library_id)
 
   except Exception as e:
