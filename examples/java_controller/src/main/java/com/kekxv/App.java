@@ -19,9 +19,9 @@ public class App {
         System.out.println("\n--- Running Test: " + name + " ---");
         try {
             func.run();
-            System.out.println("--- Test '" + name + "' PASSED ---");
+            System.out.println("\u001B[32m" + "--- Test '" + name + "' PASSED ---" + "\u001B[0m"); // Green for PASS
         } catch (Exception e) {
-            System.err.println("--- Test '" + name + "' FAILED: " + e.getMessage() + " ---");
+            System.err.println("\u001B[31m" + "--- Test '" + name + "' FAILED: " + e.getMessage() + " ---" + "\u001B[0m"); // Red for FAILED
             throw e; // 向上抛出以便 main 捕获
         }
     }
