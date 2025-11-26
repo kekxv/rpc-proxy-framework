@@ -291,6 +291,142 @@ public class App {
                 System.out.println("Buffer content verified (prefix: " + bytesToHex(expectedRawOutputPrefix) + ", Size: " + updatedSize + ")");
             });
 
+            // 7. Dynamic Buffer Callback Functionality
+            runTest("Dynamic Buffer Callback Functionality", () -> {
+                client.clearEvents(); // Clear any stale events
+
+                // Signature: void callback(int type, unsigned char* data, int size, void* context)
+                // Mapped to: int32, buffer_ptr(size_index=2), int32, pointer
+                
+                JSONObject regReq = new JSONObject()
+                    .put("command", "register_callback")
+                    .put("payload", new JSONObject()
+                        .put("return_type", "void")
+                        .put("args_type", new JSONArray()
+                            .put("int32")
+                            .put(new JSONObject().put("type", "buffer_ptr").put("size_arg_index", 2))
+                            .put("int32")
+                            .put("pointer")
+                        )
+                    );
+                JSONObject regRes = client.sendRequest(regReq);
+                if (!"success".equals(regRes.optString("status"))) {
+                    throw new RuntimeException("Failed to register callback: " + regRes.optString("error_message"));
+                }
+                String cbId = regRes.getJSONObject("data").getString("callback_id");
+                System.out.println("Dynamic Buffer Callback registered with ID: " + cbId);
+
+                String testStr = "DynamicData123";
+                JSONObject callReq = new JSONObject()
+                    .put("command", "call_function")
+                    .put("payload", new JSONObject()
+                        .put("library_id", libraryId[0])
+                        .put("function_name", "trigger_read_callback")
+                        .put("return_type", "void")
+                        .put("args", new JSONArray()
+                            .put(new JSONObject().put("type", "callback").put("value", cbId))
+                            .put(new JSONObject().put("type", "int32").put("value", 99))
+                            .put(new JSONObject().put("type", "string").put("value", testStr))
+                            .put(new JSONObject().put("type", "pointer").put("value", 0x1234))
+                        )
+                    );
+                client.sendRequest(callReq);
+                System.out.println("trigger_read_callback called, waiting for event...");
+
+                JSONObject event = client.getEvent(5, TimeUnit.SECONDS);
+                if (event == null) throw new RuntimeException("Callback event timeout");
+                if (!"invoke_callback".equals(event.optString("event"))) {
+                    throw new RuntimeException("Wrong event type: " + event.optString("event"));
+                }
+                
+                JSONArray args2 = event.getJSONObject("payload").getJSONArray("args");
+                
+                // Verify arg 0: type
+                if (args2.getJSONObject(0).getInt("value") != 99) throw new RuntimeException("Arg 0 mismatch");
+
+                // Verify arg 1: buffer
+                if (!"buffer_ptr".equals(args2.getJSONObject(1).getString("type"))) throw new RuntimeException("Arg 1 type mismatch");
+                String b64Data = args2.getJSONObject(1).getString("value");
+                String decoded = new String(Base64.getDecoder().decode(b64Data));
+                if (!testStr.equals(decoded)) throw new RuntimeException("Arg 1 data mismatch: expected " + testStr + ", got " + decoded);
+                
+                // Verify arg 2: size
+                if (args2.getJSONObject(2).getInt("value") != testStr.length()) throw new RuntimeException("Arg 2 size mismatch");
+                
+                System.out.println("Dynamic Buffer Callback Verified. Data: " + decoded);
+
+                JSONObject unregReq = new JSONObject()
+                    .put("command", "unregister_callback")
+                    .put("payload", new JSONObject().put("callback_id", cbId));
+                client.sendRequest(unregReq);
+            });
+
+            // 8. Fixed Buffer Callback Functionality
+            runTest("Fixed Buffer Callback Functionality", () -> {
+                client.clearEvents(); // Clear any stale events
+
+                // Signature: void callback(unsigned char* data, void* context)
+                // Fixed size 4 bytes
+                
+                JSONObject regReq = new JSONObject()
+                    .put("command", "register_callback")
+                    .put("payload", new JSONObject()
+                        .put("return_type", "void")
+                        .put("args_type", new JSONArray()
+                            .put(new JSONObject().put("type", "buffer_ptr").put("fixed_size", 4))
+                            .put("pointer")
+                        )
+                    );
+                JSONObject regRes = client.sendRequest(regReq);
+                if (!"success".equals(regRes.optString("status"))) {
+                    throw new RuntimeException("Failed to register callback: " + regRes.optString("error_message"));
+                }
+                String cbId = regRes.getJSONObject("data").getString("callback_id");
+                System.out.println("Fixed Buffer Callback registered with ID: " + cbId);
+
+                JSONObject callReq = new JSONObject()
+                    .put("command", "call_function")
+                    .put("payload", new JSONObject()
+                        .put("library_id", libraryId[0])
+                        .put("function_name", "trigger_fixed_read_callback")
+                        .put("return_type", "void")
+                        .put("args", new JSONArray()
+                            .put(new JSONObject().put("type", "callback").put("value", cbId))
+                            .put(new JSONObject().put("type", "pointer").put("value", 0x5678))
+                        )
+                    );
+                client.sendRequest(callReq);
+                System.out.println("trigger_fixed_read_callback called, waiting for event...");
+
+                JSONObject event = client.getEvent(5, TimeUnit.SECONDS);
+                if (event == null) throw new RuntimeException("Callback event timeout");
+                if (!"invoke_callback".equals(event.optString("event"))) {
+                    throw new RuntimeException("Wrong event type: " + event.optString("event"));
+                }
+
+                JSONArray args1 = event.getJSONObject("payload").getJSONArray("args");
+
+                // Verify arg 0: buffer (fixed size 4)
+                if (!"buffer_ptr".equals(args1.getJSONObject(0).getString("type"))) throw new RuntimeException("Arg 0 type mismatch");
+                if (args1.getJSONObject(0).getInt("size") != 4) throw new RuntimeException("Arg 0 size mismatch");
+
+                String b64Data = args1.getJSONObject(0).getString("value");
+                byte[] decoded = Base64.getDecoder().decode(b64Data);
+                byte[] expected = {(byte)0xDE, (byte)0xAD, (byte)0xBE, (byte)0xEF};
+                
+                if (decoded.length != 4) throw new RuntimeException("Decoded length mismatch");
+                for (int i=0; i<4; i++) {
+                    if (decoded[i] != expected[i]) throw new RuntimeException("Data content mismatch at index " + i);
+                }
+                
+                System.out.println("Fixed Buffer Callback Verified. Data hex: " + bytesToHex(decoded));
+
+                JSONObject unregReq = new JSONObject()
+                    .put("command", "unregister_callback")
+                    .put("payload", new JSONObject().put("callback_id", cbId));
+                client.sendRequest(unregReq);
+            });
+
         } catch (Exception e) {
             e.printStackTrace();
         }
