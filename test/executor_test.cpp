@@ -261,7 +261,10 @@ TEST_F(ExecutorTest, CreateLine)
 TEST_F(ExecutorTest, CallbackFunction)
 {
   if (test_lib_id.empty()) return;
-  std::string cb_id = callback_manager.registerCallback("void", {"string", "int32"});
+  json args_def(Json::arrayValue);
+  args_def.append("string");
+  args_def.append("int32");
+  std::string cb_id = callback_manager.registerCallback("void", args_def);
   json payload;
   payload["library_id"] = test_lib_id;
   payload["function_name"] = "call_my_callback";
