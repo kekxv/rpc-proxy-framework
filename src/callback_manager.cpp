@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include "uuid.h" // Using stduuid library
+#include "base64.h"
 
 // Helper to convert ffi_type* to string for JSON serialization
 std::string ffiTypeToString(ffi_type* type)
@@ -75,21 +76,49 @@ ffi_type* CallbackManager::getFfiType(const std::string& type_name)
 }
 
 std::string CallbackManager::registerCallback(const std::string& return_type_name,
-                                              const std::vector<std::string>& arg_type_names)
+                                              const Json::Value& args_type_def)
 {
   auto info = std::make_unique<CallbackInfo>();
   info->callback_id = generateUniqueId();
   info->connection = connection_;
   info->struct_manager = struct_manager_;
   info->return_type_name = return_type_name;
-  info->arg_type_names = arg_type_names;
 
   info->return_type = getFfiType(return_type_name);
 
-  info->arg_types.reserve(arg_type_names.size());
-  for (const auto& name : arg_type_names)
+  if (!args_type_def.isArray()) {
+      throw std::runtime_error("args_type must be an array");
+  }
+
+  info->arg_types.reserve(args_type_def.size());
+  info->args_info.reserve(args_type_def.size());
+
+  for (const auto& arg_def : args_type_def)
   {
-    info->arg_types.push_back(getFfiType(name));
+    CallbackArgInfo arg_info;
+    if (arg_def.isString()) {
+        arg_info.type_name = arg_def.asString();
+        arg_info.ffi_type_ptr = getFfiType(arg_info.type_name);
+    } else if (arg_def.isObject()) {
+        std::string type = arg_def["type"].asString();
+        if (type == "buffer_ptr") {
+            arg_info.type_name = "buffer_ptr";
+            // buffer_ptr is physically a pointer
+            arg_info.ffi_type_ptr = &ffi_type_pointer; 
+            if (arg_def.isMember("size_arg_index")) {
+                arg_info.size_arg_index = arg_def["size_arg_index"].asInt();
+            } else {
+                 throw std::runtime_error("buffer_ptr requires size_arg_index");
+            }
+        } else {
+             throw std::runtime_error("Unknown complex argument type in callback: " + type);
+        }
+    } else {
+        throw std::runtime_error("Invalid argument definition in callback args_type");
+    }
+
+    info->args_info.push_back(arg_info);
+    info->arg_types.push_back(arg_info.ffi_type_ptr);
   }
 
   ffi_status status = ffi_prep_cif(&info->cif, FFI_DEFAULT_ABI,
@@ -156,10 +185,29 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
   event_payload["callback_id"] = info->callback_id;
   Json::Value args_json(Json::arrayValue);
 
+  // We need to be able to access argument values by index to resolve sizes.
+  // args[i] is a pointer to the value.
+  auto get_int_arg_val = [&](int index) -> int64_t {
+      if (index < 0 || index >= (int)info->args_info.size()) return 0;
+      const auto& arg_info = info->args_info[index];
+      void* val_ptr = args[index];
+      
+      if (arg_info.type_name == "int8") return *static_cast<int8_t*>(val_ptr);
+      if (arg_info.type_name == "uint8") return *static_cast<uint8_t*>(val_ptr);
+      if (arg_info.type_name == "int16") return *static_cast<int16_t*>(val_ptr);
+      if (arg_info.type_name == "uint16") return *static_cast<uint16_t*>(val_ptr);
+      if (arg_info.type_name == "int32") return *static_cast<int32_t*>(val_ptr);
+      if (arg_info.type_name == "uint32") return *static_cast<uint32_t*>(val_ptr);
+      if (arg_info.type_name == "int64") return *static_cast<int64_t*>(val_ptr);
+      if (arg_info.type_name == "uint64") return *static_cast<uint64_t*>(val_ptr); // Cast to int64 for simplicity
+      return 0;
+  };
+
   for (size_t i = 0; i < cif->nargs; ++i)
   {
     Json::Value arg_data;
-    const std::string& type_name = info->arg_type_names[i];
+    const auto& arg_info = info->args_info[i];
+    const std::string& type_name = arg_info.type_name;
     arg_data["type"] = type_name;
 
     if (type_name == "int8") arg_data["value"] = *static_cast<int8_t*>(args[i]);
@@ -186,6 +234,23 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
     else if (type_name == "pointer")
     {
       arg_data["value"] = (Json::UInt64)reinterpret_cast<uintptr_t>(*static_cast<void**>(args[i]));
+    }
+    else if (type_name == "buffer_ptr")
+    {
+        // Dynamic buffer handling
+        void* ptr = *static_cast<void**>(args[i]);
+        if (ptr) {
+            int64_t size = get_int_arg_val(arg_info.size_arg_index);
+            if (size > 0) {
+                arg_data["value"] = base64_encode(static_cast<unsigned char*>(ptr), (size_t)size);
+                arg_data["size"] = (Json::UInt64)size;
+            } else {
+                arg_data["value"] = "";
+                arg_data["size"] = 0;
+            }
+        } else {
+            arg_data["value"] = Json::nullValue;
+        }
     }
     else
     {

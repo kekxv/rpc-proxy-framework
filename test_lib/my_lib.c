@@ -123,3 +123,20 @@ DLLEXPORT int process_buffer_inout(char* buff, int* size) {
     return 0; // Success
 }
 
+typedef void(*ReadCallback)(int type, unsigned char data[], int size, void *that);
+
+DLLEXPORT void trigger_read_callback(ReadCallback cb, int type, const char* input_str, void* context) {
+    if (cb) {
+        // Cast const char* to unsigned char* for the callback
+        // In a real scenario, this might be binary data
+        unsigned char* data = (unsigned char*)input_str;
+        int size = 0;
+        if (input_str) {
+            size = (int)strlen(input_str);
+        }
+        
+        printf("Native triggering ReadCallback: type=%d, size=%d, context=%p\n", type, size, context);
+        cb(type, data, size, context);
+    }
+}
+

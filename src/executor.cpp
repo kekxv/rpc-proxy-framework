@@ -79,14 +79,9 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
                             FfiDispatcher&)
     {
       std::string ret_type = payload["return_type"].asString();
-      std::vector<std::string> args;
+      // Pass the args_type JSON value directly to allow complex definitions
       const auto& args_json = payload["args_type"];
-      if (args_json.isArray()) {
-          for (const auto& arg : args_json) {
-              args.push_back(arg.asString());
-          }
-      }
-      std::string cb_id = cm.registerCallback(ret_type, args);
+      std::string cb_id = cm.registerCallback(ret_type, args_json);
       resp["status"] = "success";
       resp["data"]["callback_id"] = cb_id;
     }

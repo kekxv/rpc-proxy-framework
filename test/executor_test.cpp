@@ -292,3 +292,66 @@ TEST_F(ExecutorTest, ProcessBufferInout)
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload);
   ASSERT_EQ(result["return"]["value"].asInt(), 0);
 }
+
+TEST_F(ExecutorTest, TriggerReadCallback)
+{
+  if (test_lib_id.empty()) return;
+
+  // typedef void(*ReadCallback)(int type, unsigned char data[], int size, void *that);
+  // Corresponds to: int32, buffer_ptr(size_index=2), int32, pointer
+  
+  // Construct complex args_type definition
+  json args_def(Json::arrayValue);
+  args_def.append("int32");
+  
+  json buffer_arg;
+  buffer_arg["type"] = "buffer_ptr";
+  buffer_arg["size_arg_index"] = 2;
+  args_def.append(buffer_arg);
+  
+  args_def.append("int32");
+  args_def.append("pointer");
+
+  std::string cb_id = callback_manager.registerCallback("void", args_def);
+
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "trigger_read_callback";
+  payload["return_type"] = "void";
+
+  json args(Json::arrayValue);
+  // 1. callback func ptr
+  { json a; a["type"]="callback"; a["value"]=cb_id; args.append(a); }
+  // 2. int type
+  { json a; a["type"]="int32"; a["value"]=99; args.append(a); }
+  // 3. const char* input_str (as test data)
+  { json a; a["type"]="string"; a["value"]="TestBinaryData"; args.append(a); }
+  // 4. void* context
+  { json a; a["type"]="pointer"; a["value"]=123456; args.append(a); }
+  
+  payload["args"] = args;
+
+  ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "trigger_read_callback"), payload);
+  
+  // Verify callback was invoked
+  ASSERT_EQ(dummy_connection.last_event["event"].asString(), "invoke_callback");
+  
+  json cb_args = dummy_connection.last_event["payload"]["args"];
+  ASSERT_EQ(cb_args.size(), 4);
+
+  // Check arg 0: type
+  EXPECT_EQ(cb_args[0]["value"].asInt(), 99);
+
+  // Check arg 1: data buffer
+  // Should be base64 encoded "TestBinaryData"
+  // "TestBinaryData" -> Base64: "VGVzdEJpbmFyeURhdGE="
+  EXPECT_EQ(cb_args[1]["type"].asString(), "buffer_ptr");
+  EXPECT_EQ(cb_args[1]["value"].asString(), "VGVzdEJpbmFyeURhdGE=");
+  EXPECT_EQ(cb_args[1]["size"].asInt(), 14);
+
+  // Check arg 2: size (len of "TestBinaryData" is 14)
+  EXPECT_EQ(cb_args[2]["value"].asInt(), 14);
+
+  // Check arg 3: context
+  EXPECT_EQ(cb_args[3]["value"].asUInt64(), 123456);
+}

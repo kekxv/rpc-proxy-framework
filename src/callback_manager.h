@@ -16,14 +16,23 @@
 // Forward declaration
 class ClientConnection;
 
+struct CallbackArgInfo {
+    std::string type_name;
+    ffi_type* ffi_type_ptr;
+    int size_arg_index = -1; // For buffer_ptr: index of the argument that holds the size
+};
+
 struct CallbackInfo {
     std::string callback_id;
     ffi_cif cif;
     ffi_closure* closure;
     void* trampoline_function_ptr;
-    std::vector<ffi_type*> arg_types;
+    std::vector<ffi_type*> arg_types; // For ffi_prep_cif
     ffi_type* return_type;
-    std::vector<std::string> arg_type_names;
+    
+    // Enhanced argument info
+    std::vector<CallbackArgInfo> args_info;
+    
     std::string return_type_name;
     ClientConnection* connection; // Pointer to the client connection to send events
     StructManager* struct_manager;
@@ -34,7 +43,8 @@ public:
     CallbackManager(ClientConnection* connection, StructManager* struct_manager);
     ~CallbackManager();
 
-    std::string registerCallback(const std::string& return_type_name, const std::vector<std::string>& arg_type_names);
+    // Updated signature to accept Json::Value for args_type to support objects
+    std::string registerCallback(const std::string& return_type_name, const Json::Value& args_type_def);
     void unregisterCallback(const std::string& callback_id);
     void* getTrampolineFunctionPtr(const std::string& callback_id);
 
