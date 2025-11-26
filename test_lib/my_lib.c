@@ -140,3 +140,14 @@ DLLEXPORT void trigger_read_callback(ReadCallback cb, int type, const char* inpu
     }
 }
 
+typedef void(*FixedReadCallback)(unsigned char data[], void *that);
+
+DLLEXPORT void trigger_fixed_read_callback(FixedReadCallback cb, void* context) {
+    if (cb) {
+        // Fixed data: 0xDE, 0xAD, 0xBE, 0xEF (4 bytes)
+        unsigned char data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+        printf("Native triggering FixedReadCallback with 4 bytes\n");
+        cb(data, context);
+    }
+}
+

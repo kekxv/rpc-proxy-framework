@@ -20,6 +20,7 @@ struct CallbackArgInfo {
     std::string type_name;
     ffi_type* ffi_type_ptr;
     int size_arg_index = -1; // For buffer_ptr: index of the argument that holds the size
+    int fixed_size = -1;     // For buffer_ptr: fixed size if size_arg_index is not used
 };
 
 struct CallbackInfo {

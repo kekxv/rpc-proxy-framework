@@ -355,3 +355,53 @@ TEST_F(ExecutorTest, TriggerReadCallback)
   // Check arg 3: context
   EXPECT_EQ(cb_args[3]["value"].asUInt64(), 123456);
 }
+
+TEST_F(ExecutorTest, TriggerFixedReadCallback)
+{
+  if (test_lib_id.empty()) return;
+
+  // typedef void(*FixedReadCallback)(unsigned char data[], void *that);
+  // Corresponds to: buffer_ptr(fixed_size=4), pointer
+  
+  json args_def(Json::arrayValue);
+  
+  json buffer_arg;
+  buffer_arg["type"] = "buffer_ptr";
+  buffer_arg["fixed_size"] = 4;
+  args_def.append(buffer_arg);
+  
+  args_def.append("pointer");
+
+  std::string cb_id = callback_manager.registerCallback("void", args_def);
+
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "trigger_fixed_read_callback";
+  payload["return_type"] = "void";
+
+  json args(Json::arrayValue);
+  // 1. callback func ptr
+  { json a; a["type"]="callback"; a["value"]=cb_id; args.append(a); }
+  // 2. void* context
+  { json a; a["type"]="pointer"; a["value"]=987654; args.append(a); }
+  
+  payload["args"] = args;
+
+  ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "trigger_fixed_read_callback"), payload);
+  
+  // Verify callback was invoked
+  ASSERT_EQ(dummy_connection.last_event["event"].asString(), "invoke_callback");
+  
+  json cb_args = dummy_connection.last_event["payload"]["args"];
+  ASSERT_EQ(cb_args.size(), 2);
+
+  // Check arg 0: data buffer (fixed size 4)
+  // Data: DE AD BE EF
+  // Base64: 3q2+7w==
+  EXPECT_EQ(cb_args[0]["type"].asString(), "buffer_ptr");
+  EXPECT_EQ(cb_args[0]["value"].asString(), "3q2+7w==");
+  EXPECT_EQ(cb_args[0]["size"].asInt(), 4);
+
+  // Check arg 1: context
+  EXPECT_EQ(cb_args[1]["value"].asUInt64(), 987654);
+}

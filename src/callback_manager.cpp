@@ -107,8 +107,10 @@ std::string CallbackManager::registerCallback(const std::string& return_type_nam
             arg_info.ffi_type_ptr = &ffi_type_pointer; 
             if (arg_def.isMember("size_arg_index")) {
                 arg_info.size_arg_index = arg_def["size_arg_index"].asInt();
+            } else if (arg_def.isMember("fixed_size")) {
+                arg_info.fixed_size = arg_def["fixed_size"].asInt();
             } else {
-                 throw std::runtime_error("buffer_ptr requires size_arg_index");
+                 throw std::runtime_error("buffer_ptr requires either size_arg_index or fixed_size");
             }
         } else {
              throw std::runtime_error("Unknown complex argument type in callback: " + type);
@@ -240,7 +242,13 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
         // Dynamic buffer handling
         void* ptr = *static_cast<void**>(args[i]);
         if (ptr) {
-            int64_t size = get_int_arg_val(arg_info.size_arg_index);
+            int64_t size = 0;
+            if (arg_info.size_arg_index >= 0) {
+                size = get_int_arg_val(arg_info.size_arg_index);
+            } else if (arg_info.fixed_size > 0) {
+                size = arg_info.fixed_size;
+            }
+            
             if (size > 0) {
                 arg_data["value"] = base64_encode(static_cast<unsigned char*>(ptr), (size_t)size);
                 arg_data["size"] = (Json::UInt64)size;
