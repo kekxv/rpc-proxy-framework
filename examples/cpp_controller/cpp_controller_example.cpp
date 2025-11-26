@@ -290,11 +290,12 @@ void run_test(const std::string& name, const std::function<void(RpcClient&)>& te
   try
   {
     test_func(client);
-    std::cout << "--- Test '" << name << "' PASSED ---" << std::endl;
+    std::cout << "\033[32m" << "--- Test '" << name << "' PASSED ---" << "\033[0m" << std::endl; // Green for PASS
   }
   catch (const std::exception& e)
   {
-    std::cerr << "--- Test '" << name << "' FAILED: " << e.what() << " ---" << std::endl;
+    std::cerr << "\033[31m" << "--- Test '" << name << "' FAILED: " << e.what() << " ---" << "\033[0m" << std::endl;
+    // Red for FAILED
     throw;
   }
 }
@@ -586,22 +587,22 @@ int main(int argc, char* argv[])
 
       // typedef void(*ReadCallback)(int type, unsigned char data[], int size, void *that);
       // Mapped to: int32, buffer_ptr(size_index=2), int32, pointer
-      
+
       json reg_req;
       reg_req["command"] = "register_callback";
       reg_req["payload"]["return_type"] = "void";
-      
+
       json args_type(Json::arrayValue);
       args_type.append("int32");
-      
+
       json buffer_arg;
       buffer_arg["type"] = "buffer_ptr";
       buffer_arg["size_arg_index"] = 2;
       args_type.append(buffer_arg);
-      
+
       args_type.append("int32");
       args_type.append("pointer");
-      
+
       reg_req["payload"]["args_type"] = args_type;
 
       json reg_res = c.send_request(reg_req);
@@ -616,14 +617,34 @@ int main(int argc, char* argv[])
 
       json args(Json::arrayValue);
       // 1. callback
-      { json a; a["type"] = "callback"; a["value"] = callback_id; args.append(a); }
+      {
+        json a;
+        a["type"] = "callback";
+        a["value"] = callback_id;
+        args.append(a);
+      }
       // 2. int type
-      { json a; a["type"] = "int32"; a["value"] = 99; args.append(a); }
+      {
+        json a;
+        a["type"] = "int32";
+        a["value"] = 99;
+        args.append(a);
+      }
       // 3. data (string to be treated as binary)
-      { json a; a["type"] = "string"; a["value"] = "DynamicData123"; args.append(a); }
+      {
+        json a;
+        a["type"] = "string";
+        a["value"] = "DynamicData123";
+        args.append(a);
+      }
       // 4. context
-      { json a; a["type"] = "pointer"; a["value"] = (Json::UInt64)0x1234; args.append(a); }
-      
+      {
+        json a;
+        a["type"] = "pointer";
+        a["value"] = (Json::UInt64)0x1234;
+        args.append(a);
+      }
+
       call_req["payload"]["args"] = args;
 
       c.send_request(call_req);
@@ -631,18 +652,18 @@ int main(int argc, char* argv[])
 
       json event = c.get_event();
       if (event["event"].asString() != "invoke_callback") throw std::runtime_error("Unexpected event");
-      
+
       json cb_args = event["payload"]["args"];
       if (cb_args[0]["value"].asInt() != 99) throw std::runtime_error("Arg 0 mismatch");
-      
+
       // Arg 1 should be buffer_ptr
       if (cb_args[1]["type"].asString() != "buffer_ptr") throw std::runtime_error("Arg 1 type mismatch");
       std::string b64_data = cb_args[1]["value"].asString();
       std::string decoded = base64_decode(b64_data);
       if (decoded != "DynamicData123") throw std::runtime_error("Arg 1 data mismatch: " + decoded);
-      
+
       if (cb_args[2]["value"].asInt() != 14) throw std::runtime_error("Arg 2 size mismatch");
-      
+
       std::cout << "Dynamic Buffer Callback Verified. Data: " << decoded << std::endl;
     }, client);
 
@@ -652,20 +673,20 @@ int main(int argc, char* argv[])
 
       // typedef void(*FixedReadCallback)(unsigned char data[], void *that);
       // Mapped to: buffer_ptr(fixed_size=4), pointer
-      
+
       json reg_req;
       reg_req["command"] = "register_callback";
       reg_req["payload"]["return_type"] = "void";
-      
+
       json args_type(Json::arrayValue);
-      
+
       json buffer_arg;
       buffer_arg["type"] = "buffer_ptr";
       buffer_arg["fixed_size"] = 4;
       args_type.append(buffer_arg);
-      
+
       args_type.append("pointer");
-      
+
       reg_req["payload"]["args_type"] = args_type;
 
       json reg_res = c.send_request(reg_req);
@@ -680,10 +701,20 @@ int main(int argc, char* argv[])
 
       json args(Json::arrayValue);
       // 1. callback
-      { json a; a["type"] = "callback"; a["value"] = callback_id; args.append(a); }
+      {
+        json a;
+        a["type"] = "callback";
+        a["value"] = callback_id;
+        args.append(a);
+      }
       // 2. context
-      { json a; a["type"] = "pointer"; a["value"] = (Json::UInt64)0x5678; args.append(a); }
-      
+      {
+        json a;
+        a["type"] = "pointer";
+        a["value"] = (Json::UInt64)0x5678;
+        args.append(a);
+      }
+
       call_req["payload"]["args"] = args;
 
       c.send_request(call_req);
@@ -691,25 +722,26 @@ int main(int argc, char* argv[])
 
       json event = c.get_event();
       if (event["event"].asString() != "invoke_callback") throw std::runtime_error("Unexpected event");
-      
+
       json cb_args = event["payload"]["args"];
-      
+
       // Arg 0 should be buffer_ptr (fixed size 4)
       if (cb_args[0]["type"].asString() != "buffer_ptr") throw std::runtime_error("Arg 0 type mismatch");
       if (cb_args[0]["size"].asInt() != 4) throw std::runtime_error("Arg 0 size mismatch");
-      
+
       std::string b64_data = cb_args[0]["value"].asString();
       std::string decoded = base64_decode(b64_data);
-      
+
       // Expected: 0xDE, 0xAD, 0xBE, 0xEF
-      if (decoded.size() != 4 || 
-          (unsigned char)decoded[0] != 0xDE || 
-          (unsigned char)decoded[1] != 0xAD || 
-          (unsigned char)decoded[2] != 0xBE || 
-          (unsigned char)decoded[3] != 0xEF) {
-             throw std::runtime_error("Arg 0 data mismatch");
+      if (decoded.size() != 4 ||
+        (unsigned char)decoded[0] != 0xDE ||
+        (unsigned char)decoded[1] != 0xAD ||
+        (unsigned char)decoded[2] != 0xBE ||
+        (unsigned char)decoded[3] != 0xEF)
+      {
+        throw std::runtime_error("Arg 0 data mismatch");
       }
-      
+
       std::cout << "Fixed Buffer Callback Verified. Data size: " << decoded.size() << std::endl;
     }, client);
   }
