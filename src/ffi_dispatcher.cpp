@@ -115,9 +115,16 @@ void FfiDispatcher::populate_memory_from_json(char* dest_ptr, const json& value_
   else if (type_name == "double") *reinterpret_cast<double*>(dest_ptr) = value_json.asDouble();
   else if (type_name == "string")
   {
-    std::string str_val = value_json.asString();
-    char* str_data = static_cast<char*>(arg_storage.allocate_string(str_val));
-    *reinterpret_cast<char**>(dest_ptr) = str_data;
+    if (value_json.isNull())
+    {
+      *reinterpret_cast<char**>(dest_ptr) = nullptr;
+    }
+    else
+    {
+      std::string str_val = value_json.asString();
+      char* str_data = static_cast<char*>(arg_storage.allocate_string(str_val));
+      *reinterpret_cast<char**>(dest_ptr) = str_data;
+    }
   }
   else if (type_name == "pointer")
   {
@@ -155,7 +162,11 @@ json FfiDispatcher::read_json_from_memory(const char* src_ptr, const std::string
   if (type_name == "uint64") return (Json::UInt64)*reinterpret_cast<const uint64_t*>(src_ptr);
   if (type_name == "float") return *reinterpret_cast<const float*>(src_ptr);
   if (type_name == "double") return *reinterpret_cast<const double*>(src_ptr);
-  if (type_name == "string") return std::string(*reinterpret_cast<char* const*>(src_ptr));
+  if (type_name == "string")
+  {
+    char* str_ptr = *reinterpret_cast<char* const*>(src_ptr);
+    return str_ptr ? std::string(str_ptr) : Json::Value(Json::nullValue);
+  }
   if (type_name == "pointer") return (Json::UInt64)reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(src_ptr));
   if (struct_manager_.is_struct(type_name))
   {
