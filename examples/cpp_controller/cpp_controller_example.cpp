@@ -53,13 +53,13 @@ class RpcClient
 public:
 #ifdef _WIN32
   using SocketType = HANDLE;
-  const SocketType INVALID_SOCKET = INVALID_HANDLE_VALUE;
+  const SocketType RPC_INVALID_SOCKET = INVALID_HANDLE_VALUE;
 #else
   using SocketType = int;
-  const SocketType INVALID_SOCKET = -1;
+  const SocketType RPC_INVALID_SOCKET = -1;
 #endif
 
-  RpcClient(const std::string& pipe_name) : pipe_name_(pipe_name), sock_(INVALID_SOCKET), request_id_counter_(0),
+  RpcClient(const std::string& pipe_name) : pipe_name_(pipe_name), sock_(RPC_INVALID_SOCKET), request_id_counter_(0),
                                             running_(false)
   {
   }
@@ -74,14 +74,14 @@ public:
 #ifdef _WIN32
     std::string pipe_path = "\\\\.\\pipe\\" + pipe_name_;
     sock_ = CreateFileA(pipe_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (sock_ == INVALID_SOCKET)
+    if (sock_ == RPC_INVALID_SOCKET)
     {
       throw std::runtime_error("Failed to connect to named pipe: " + std::to_string(GetLastError()));
     }
 #else
     std::string socket_path = "/tmp/" + pipe_name_;
     sock_ = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock_ == INVALID_SOCKET)
+    if (sock_ == RPC_INVALID_SOCKET)
     {
       throw std::runtime_error("Failed to create socket");
     }
@@ -94,7 +94,7 @@ public:
     if (::connect(sock_, (struct sockaddr*)&addr, sizeof(addr)) == -1)
     {
       close(sock_);
-      sock_ = INVALID_SOCKET;
+      sock_ = RPC_INVALID_SOCKET;
       throw std::runtime_error("Failed to connect to Unix domain socket: " + socket_path);
     }
 #endif
@@ -106,15 +106,16 @@ public:
   void disconnect()
   {
     running_ = false;
-    if (sock_ != INVALID_SOCKET)
+    if (sock_ != RPC_INVALID_SOCKET)
     {
 #ifdef _WIN32
+      CancelIoEx(sock_, NULL);
       CloseHandle(sock_);
 #else
       shutdown(sock_, SHUT_RDWR);
       close(sock_);
 #endif
-      sock_ = INVALID_SOCKET;
+      sock_ = RPC_INVALID_SOCKET;
     }
     if (receiver_thread_.joinable())
     {

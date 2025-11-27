@@ -43,6 +43,7 @@ public:
     uint32_t net_msg_len;
     if (!ReadFile(pipe_, &net_msg_len, sizeof(net_msg_len), &bytesRead, NULL) || bytesRead == 0)
     {
+      std::cout << "[Executor: WindowsConnection::read] Client disconnected during length header read." << std::endl;
       is_open_ = false;
       return "";
     }
@@ -51,6 +52,7 @@ public:
     std::vector<char> buffer(msg_len);
     if (!ReadFile(pipe_, buffer.data(), msg_len, &bytesRead, NULL) || bytesRead != msg_len)
     {
+      std::cerr << "[Executor: WindowsConnection::read] Error receiving length header" << std::endl;
       is_open_ = false;
       return "";
     }
@@ -200,29 +202,34 @@ public:
 
   std::unique_ptr<ClientConnection> accept() override
   {
+    std::cout << "Waiting for client connection on " << pipe_name_ << "..." << std::endl;
     HANDLE hPipe = CreateNamedPipeA(pipe_name_.c_str(), PIPE_ACCESS_DUPLEX,
-                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, NULL);
-    
+                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
+                                    4096, 4096, 0, NULL);
+
     if (hPipe == INVALID_HANDLE_VALUE)
     {
-        std::cerr << "[TID:" << std::this_thread::get_id() << "][Server] CreateNamedPipeA failed with error: " << GetLastError() << std::endl;
-        // throw is too aggressive in a loop, let's return null and let the runner decide.
-        return nullptr;
+      std::cerr << "[TID:" << std::this_thread::get_id() << "][Server] CreateNamedPipeA failed with error: " <<
+        GetLastError() << std::endl;
+      // throw is too aggressive in a loop, let's return null and let the runner decide.
+      return nullptr;
     }
     listener_pipe_ = hPipe;
 
 
     BOOL connected = ConnectNamedPipe(hPipe, NULL);
-    if (!connected && GetLastError() == ERROR_PIPE_CONNECTED) {
-        connected = TRUE;
+    if (!connected && GetLastError() == ERROR_PIPE_CONNECTED)
+    {
+      connected = TRUE;
     }
 
     if (connected)
     {
       listener_pipe_ = INVALID_HANDLE_VALUE;
+      std::cout << "Client connected." << std::endl;
       return std::make_unique<WindowsConnection>(hPipe);
     }
-    
+
     CloseHandle(hPipe);
     listener_pipe_ = INVALID_HANDLE_VALUE;
     return nullptr;
@@ -233,24 +240,27 @@ public:
     // To reliably unblock ConnectNamedPipe, we connect to ourselves with a dummy client.
     // This is more robust than just closing the handle from another thread.
     HANDLE hPipe = CreateFileA(
-        pipe_name_.c_str(),
-        GENERIC_READ | GENERIC_WRITE,
-        0,
-        NULL,
-        OPEN_EXISTING,
-        0,
-        NULL
+      pipe_name_.c_str(),
+      GENERIC_READ | GENERIC_WRITE,
+      0,
+      NULL,
+      OPEN_EXISTING,
+      0,
+      NULL
     );
 
-    if (hPipe != INVALID_HANDLE_VALUE) {
-        // Just connect and immediately close. The goal is just to unblock the listener.
-        CloseHandle(hPipe);
-    } else {
-        if (listener_pipe_ != INVALID_HANDLE_VALUE)
-        {
-          CloseHandle(listener_pipe_);
-          listener_pipe_ = INVALID_HANDLE_VALUE;
-        }
+    if (hPipe != INVALID_HANDLE_VALUE)
+    {
+      // Just connect and immediately close. The goal is just to unblock the listener.
+      CloseHandle(hPipe);
+    }
+    else
+    {
+      if (listener_pipe_ != INVALID_HANDLE_VALUE)
+      {
+        CloseHandle(listener_pipe_);
+        listener_pipe_ = INVALID_HANDLE_VALUE;
+      }
     }
   }
 
@@ -303,19 +313,21 @@ public:
 
   void stop() override
   {
-    if (server_fd_ == -1) {
-        return;
+    if (server_fd_ == -1)
+    {
+      return;
     }
-    
+
     // The "self-connect" pattern is the most robust way to unblock a blocking accept() call.
     int dummy_socket = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (dummy_socket != -1) {
-        struct sockaddr_un addr;
-        addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
-        // Connect to our own socket to unblock the accept() call. No need to check for success.
-        ::connect(dummy_socket, (struct sockaddr*)&addr, sizeof(addr));
-        close(dummy_socket);
+    if (dummy_socket != -1)
+    {
+      struct sockaddr_un addr;
+      addr.sun_family = AF_UNIX;
+      strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+      // Connect to our own socket to unblock the accept() call. No need to check for success.
+      ::connect(dummy_socket, (struct sockaddr*)&addr, sizeof(addr));
+      close(dummy_socket);
     }
 
     // Now we can safely close the original server socket.
