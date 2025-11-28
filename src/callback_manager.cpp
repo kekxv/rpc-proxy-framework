@@ -2,6 +2,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
+#include <mutex>
+#include <cstdint> // Added for uintptr_t
 #include "uuid.h" // Using stduuid library
 #include "base64.h"
 
@@ -174,12 +176,16 @@ void* CallbackManager::getTrampolineFunctionPtr(const std::string& callback_id)
   throw std::runtime_error("Callback with ID " + callback_id + " not found.");
 }
 
+// Global log mutex declared in executor.cpp, used here for consistency
+extern std::mutex g_log_mutex;
+
 void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void* userdata)
 {
   CallbackInfo* info = static_cast<CallbackInfo*>(userdata);
   if (!info || !info->connection)
   {
-    std::cerr << "Error: CallbackInfo or ClientConnection not available in trampoline." << std::endl;
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    std::cerr << "[Executor][CallbackManager] Error: CallbackInfo or ClientConnection not available in trampoline." << std::endl;
     return;
   }
 

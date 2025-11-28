@@ -19,7 +19,7 @@
 using json = Json::Value;
 
 // 全局日志锁，防止多线程打印乱码
-static std::mutex g_log_mutex;
+std::mutex g_log_mutex;
 
 // -----------------------------------------------------------------------------
 // Command Dispatcher Logic
@@ -128,8 +128,10 @@ std::string handle_session_request(
     Json::CharReaderBuilder builder;
     std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
     std::string errs;
-    if (!reader->parse(request_json_str.data(), request_json_str.data() + request_json_str.size(), &request_json, &errs)) {
-         throw std::runtime_error("Parse error: " + errs);
+    if (!reader->parse(request_json_str.data(), request_json_str.data() + request_json_str.size(), &request_json,
+                       &errs))
+    {
+      throw std::runtime_error("Parse error: " + errs);
     }
 
     req_id = request_json.get("request_id", "").asString();

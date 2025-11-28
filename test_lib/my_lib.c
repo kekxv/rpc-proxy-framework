@@ -1,96 +1,244 @@
 #include <stdio.h>
-#include <stdint.h> // Required for uint64_t
-#include <string.h> // Required for strlen and strcpy
+#include <stdint.h>
+#include <stdlib.h>
+#include <memory.h>
 
 #ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
 #else
 #define DLLEXPORT
+#include <pthread.h>
+#include <unistd.h>
 #endif
 
-typedef struct {
-    int32_t x;
-    int32_t y;
+typedef struct
+{
+  int32_t x;
+  int32_t y;
 } Point;
 
-typedef struct {
-    Point p1;
-    Point p2;
+typedef struct
+{
+  Point p1;
+  Point p2;
 } Line;
 
-DLLEXPORT int add(int a, int b) {
-    return a + b;
+DLLEXPORT int add(int a, int b)
+{
+  return a + b;
 }
 
-DLLEXPORT const char* greet(const char* name) {
-    static char buffer[256];
-    snprintf(buffer, sizeof(buffer), "Hello, %s", name);
-    return buffer;
+DLLEXPORT const char* greet(const char* name)
+{
+  static char buffer[256];
+  snprintf(buffer, sizeof(buffer), "Hello, %s", name);
+  return buffer;
 }
 
-DLLEXPORT int process_point_by_val(Point p) {
-    return p.x + p.y;
+DLLEXPORT int process_point_by_val(Point p)
+{
+  return p.x + p.y;
 }
 
-DLLEXPORT int process_point_by_ptr(Point* p) {
-    // const Point* p = (const Point*)p_ptr_val;
-    if (p == NULL) {
-        return -1; // Error
-    }
-    return p->x + p->y;
+DLLEXPORT int process_point_by_ptr(Point* p)
+{
+  // const Point* p = (const Point*)p_ptr_val;
+  if (p == NULL)
+  {
+    return -1; // Error
+  }
+  return p->x + p->y;
 }
 
-DLLEXPORT Point create_point(int32_t x, int32_t y) {
-    Point p = {x, y};
-    return p;
+DLLEXPORT Point create_point(int32_t x, int32_t y)
+{
+  Point p = {x, y};
+  return p;
 }
 
-DLLEXPORT int get_line_length(Line line) {
-    return line.p1.x + line.p1.y + line.p2.x + line.p2.y;
+DLLEXPORT int get_line_length(Line line)
+{
+  return line.p1.x + line.p1.y + line.p2.x + line.p2.y;
 }
 
-DLLEXPORT int sum_points(const Point* points, int count) {
-    if (points == NULL) {
-        return -1;
-    }
-    int total_sum = 0;
-    for (int i = 0; i < count; ++i) {
-        total_sum += points[i].x + points[i].y;
-    }
-    return total_sum;
+DLLEXPORT int sum_points(const Point* points, int count)
+{
+  if (points == NULL)
+  {
+    return -1;
+  }
+  int total_sum = 0;
+  for (int i = 0; i < count; ++i)
+  {
+    total_sum += points[i].x + points[i].y;
+  }
+  return total_sum;
 }
 
-DLLEXPORT Line create_line(int32_t p1x, int32_t p1y, int32_t p2x, int32_t p2y) {
-    Line l = {{p1x, p1y}, {p2x, p2y}};
-    return l;
+DLLEXPORT Line create_line(int32_t p1x, int32_t p1y, int32_t p2x, int32_t p2y)
+{
+  Line l = {{p1x, p1y}, {p2x, p2y}};
+  return l;
 }
 
 // New function to demonstrate callbacks
 // The callback function is expected to have the signature: void (*callback_fn)(const char* message, int value)
-DLLEXPORT void call_my_callback(void (*callback_fn)(const char* message, int value), const char* msg) {
-    if (callback_fn) {
-        printf("Native code calling back with message: %s, value: %d\n", msg, 123);
-        callback_fn(msg, 123);
-    } else {
-        printf("Callback function is NULL.\n");
-    }
+DLLEXPORT void call_my_callback(void (*callback_fn)(const char* message, int value), const char* msg)
+{
+  if (callback_fn)
+  {
+    printf("Native code calling back with message: %s, value: %d\n", msg, 123);
+    callback_fn(msg, 123);
+  }
+  else
+  {
+    printf("Callback function is NULL.\n");
+  }
 }
 
 // New function to demonstrate multiple callbacks
 // The callback function is expected to have the signature: void (*callback_fn)(const char* message, int value)
-DLLEXPORT void call_multi_callbacks(void (*callback_fn)(const char* message, int value), int count) {
-    if (!callback_fn) {
-        printf("Callback function is NULL for multi-callbacks.\n");
-        return;
-    }
-    printf("Native code starting multi-callbacks, count: %d\n", count);
-    for (int i = 0; i < count; ++i) {
-        char message[256];
-        snprintf(message, sizeof(message), "Message from native code, call %d", i + 1);
-        printf("  Calling back with message: %s, value: %d\n", message, i + 1);
-        callback_fn(message, i + 1);
-    }
-    printf("Native code finished multi-callbacks.\n");
+DLLEXPORT void call_multi_callbacks(void (*callback_fn)(const char* message, int value), int count)
+{
+  if (!callback_fn)
+  {
+    printf("Callback function is NULL for multi-callbacks.\n");
+    return;
+  }
+  printf("Native code starting multi-callbacks, count: %d\n", count);
+  for (int i = 0; i < count; ++i)
+  {
+    char message[256];
+    snprintf(message, sizeof(message), "Message from native code, call %d", i + 1);
+    printf("  Calling back with message: %s, value: %d\n", message, i + 1);
+    callback_fn(message, i + 1);
+  }
+  printf("Native code finished multi-callbacks.\n");
+}
+
+// 1. 定义一个结构体来传递参数到子线程
+// 因为线程创建函数通常只接受一个 void* 参数
+typedef struct
+{
+  void (*callback_fn)(const char* message, int value);
+  int count;
+} ThreadArgs;
+
+// 2. 实际的工作逻辑函数（通用逻辑）
+void run_callbacks_logic(ThreadArgs* args)
+{
+  if (!args || !args->callback_fn)
+  {
+    if (args) free(args);
+    return;
+  }
+
+  printf("Native thread started. Count: %d\n", args->count);
+
+  for (int i = 0; i < args->count; ++i)
+  {
+    char message[256];
+    snprintf(message, sizeof(message), "Message from native thread, call %d", i + 1);
+
+    // 打印调试信息
+    printf("  [Thread] Calling back with message: %s, value: %d\n", message, i + 1);
+
+    // 执行回调
+    args->callback_fn(message, i + 1);
+
+    // 可选：为了演示效果，可以稍微暂停一下，避免瞬间跑完
+#ifdef _WIN32
+    Sleep(50);
+#else
+    usleep(50 * 1000);
+#endif
+  }
+
+  printf("Native thread finished.\n");
+
+  // 3. 重要：释放主线程分配的内存
+  free(args);
+}
+
+// 4. Windows 线程入口函数
+#ifdef _WIN32
+DWORD WINAPI ThreadWorkerWin(LPVOID lpParam)
+{
+  ThreadArgs* args = (ThreadArgs*)lpParam;
+  run_callbacks_logic(args);
+  return 0;
+}
+#else
+// 4. Linux/POSIX 线程入口函数
+void* ThreadWorkerLinux(void* arg)
+{
+  ThreadArgs* args = (ThreadArgs*)arg;
+  run_callbacks_logic(args);
+  return NULL;
+}
+#endif
+
+// New function to demonstrate multiple callbacks
+// The callback function is expected to have the signature: void (*callback_fn)(const char* message, int value)
+DLLEXPORT void call_thread_multi_callbacks(void (*callback_fn)(const char* message, int value), int count)
+{
+  if (!callback_fn)
+  {
+    printf("Callback function is NULL.\n");
+    return;
+  }
+
+  // 在堆上分配参数结构体，确保数据在子线程运行时有效
+  ThreadArgs* args = (ThreadArgs*)malloc(sizeof(ThreadArgs));
+  if (!args)
+  {
+    printf("Failed to allocate memory for thread args.\n");
+    return;
+  }
+  args->callback_fn = callback_fn;
+  args->count = count;
+
+  printf("Main native function spawning thread...\n");
+
+#ifdef _WIN32
+  // Windows 创建线程
+  HANDLE hThread = CreateThread(
+    NULL, // default security attributes
+    0, // use default stack size
+    ThreadWorkerWin, // thread function name
+    args, // argument to thread function
+    0, // use default creation flags
+    NULL); // returns the thread identifier
+
+  if (hThread == NULL)
+  {
+    printf("Error creating Windows thread.\n");
+    free(args); // 创建失败需手动释放
+  }
+  else
+  {
+    // 不需要等待线程结束，让它在后台运行
+    CloseHandle(hThread);
+  }
+
+#else
+  // Linux 创建线程
+  pthread_t thread_id;
+  int result = pthread_create(&thread_id, NULL, ThreadWorkerLinux, args);
+
+  if (result != 0)
+  {
+    printf("Error creating Linux thread.\n");
+    free(args); // 创建失败需手动释放
+  }
+  else
+  {
+    // 分离线程，使其结束后自动释放资源，不需要主线程 join
+    pthread_detach(thread_id);
+  }
+#endif
+
+  printf("Main native function returned (thread runs in background).\n");
 }
 
 // New function to demonstrate writing to an output buffer
@@ -99,55 +247,62 @@ DLLEXPORT void call_multi_callbacks(void (*callback_fn)(const char* message, int
 // New function to demonstrate inout buffer
 // buff: inout buffer, size: input buffer capacity, output actual size written
 // Returns 0 on success, -1 for invalid arguments, -2 for buffer too small
-DLLEXPORT int process_buffer_inout(char* buff, int* size) {
-    if (buff == NULL || size == NULL) {
-        return -1; // Invalid arguments
-    }
-    if (*size < 4) {
-        *size = 0;
-        return -2; // Buffer too small
-    }
+DLLEXPORT int process_buffer_inout(char* buff, int* size)
+{
+  if (buff == NULL || size == NULL)
+  {
+    return -1; // Invalid arguments
+  }
+  if (*size < 4)
+  {
+    *size = 0;
+    return -2; // Buffer too small
+  }
 
-    // Read input from buffer (e.g., first byte)
-    char input_val = buff[0];
+  // Read input from buffer (e.g., first byte)
+  char input_val = buff[0];
 
-    // Write new data to buffer
-    buff[0] = 0xAA; // Overwrite a byte to show it's inout
-    buff[1] = input_val + 1; // Use input value
-    buff[2] = 0xDE;
-    buff[3] = 0xAD;
+  // Write new data to buffer
+  buff[0] = 0xAA; // Overwrite a byte to show it's inout
+  buff[1] = input_val + 1; // Use input value
+  buff[2] = 0xDE;
+  buff[3] = 0xAD;
 
-    // Report actual size of the meaningful output data
-    *size = 4;
+  // Report actual size of the meaningful output data
+  *size = 4;
 
-    return 0; // Success
+  return 0; // Success
 }
 
-typedef void(*ReadCallback)(int type, unsigned char data[], int size, void *that);
+typedef void (*ReadCallback)(int type, unsigned char data[], int size, void* that);
 
-DLLEXPORT void trigger_read_callback(ReadCallback cb, int type, const char* input_str, void* context) {
-    if (cb) {
-        // Cast const char* to unsigned char* for the callback
-        // In a real scenario, this might be binary data
-        unsigned char* data = (unsigned char*)input_str;
-        int size = 0;
-        if (input_str) {
-            size = (int)strlen(input_str);
-        }
-        
-        printf("Native triggering ReadCallback: type=%d, size=%d, context=%p\n", type, size, context);
-        cb(type, data, size, context);
+DLLEXPORT void trigger_read_callback(ReadCallback cb, int type, const char* input_str, void* context)
+{
+  if (cb)
+  {
+    // Cast const char* to unsigned char* for the callback
+    // In a real scenario, this might be binary data
+    unsigned char* data = (unsigned char*)input_str;
+    int size = 0;
+    if (input_str)
+    {
+      size = (int)strlen(input_str);
     }
+
+    printf("Native triggering ReadCallback: type=%d, size=%d, context=%p\n", type, size, context);
+    cb(type, data, size, context);
+  }
 }
 
-typedef void(*FixedReadCallback)(unsigned char data[], void *that);
+typedef void (*FixedReadCallback)(unsigned char data[], void* that);
 
-DLLEXPORT void trigger_fixed_read_callback(FixedReadCallback cb, void* context) {
-    if (cb) {
-        // Fixed data: 0xDE, 0xAD, 0xBE, 0xEF (4 bytes)
-        unsigned char data[] = {0xDE, 0xAD, 0xBE, 0xEF};
-        printf("Native triggering FixedReadCallback with 4 bytes\n");
-        cb(data, context);
-    }
+DLLEXPORT void trigger_fixed_read_callback(FixedReadCallback cb, void* context)
+{
+  if (cb)
+  {
+    // Fixed data: 0xDE, 0xAD, 0xBE, 0xEF (4 bytes)
+    unsigned char data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    printf("Native triggering FixedReadCallback with 4 bytes\n");
+    cb(data, context);
+  }
 }
-

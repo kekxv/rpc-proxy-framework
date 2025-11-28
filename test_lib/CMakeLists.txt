@@ -8,3 +8,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # 移除 'lib' 前缀，使库名在各平台统一为 my_lib.so/my_lib.dylib/my_lib.dll
 set_target_properties(my_lib PROPERTIES PREFIX "")
+
+if (UNIX)
+    target_link_libraries(my_lib -lpthread)
+endif ()
