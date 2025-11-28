@@ -5,6 +5,7 @@
 
 #ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
+#include <windows.h>
 #else
 #define DLLEXPORT
 #include <pthread.h>
