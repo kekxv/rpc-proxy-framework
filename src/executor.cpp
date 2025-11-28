@@ -32,14 +32,16 @@ using CommandHandler = std::function<void(
   LibManager& lib_mgr,
   StructManager& struct_mgr,
   CallbackManager& cb_mgr,
-  FfiDispatcher& ffi_disp
+  FfiDispatcher& ffi_disp,
+  std::map<std::string, json>& cleanup_tasks,
+  int& cleanup_counter
 )>;
 
 // 注册所有支持的命令
 static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   {
     "load_library", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
-                       FfiDispatcher&)
+                       FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string path = payload["path"].asString();
       std::string lib_id = lib.load_library(path);
@@ -49,7 +51,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "unload_library", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
-                         FfiDispatcher&)
+                         FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string lib_id = payload["library_id"].asString();
       lib.unload_library(lib_id);
@@ -58,7 +60,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "register_struct", [](const json& payload, json& resp, LibManager&, StructManager& sm, CallbackManager&,
-                          FfiDispatcher&)
+                          FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string name = payload["struct_name"].asString();
       sm.register_struct(name, payload["definition"]);
@@ -67,7 +69,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "unregister_struct", [](const json& payload, json& resp, LibManager&, StructManager& sm, CallbackManager&,
-                            FfiDispatcher&)
+                            FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string name = payload["struct_name"].asString();
       sm.unregister_struct(name);
@@ -76,7 +78,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "register_callback", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager& cm,
-                            FfiDispatcher&)
+                            FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string ret_type = payload["return_type"].asString();
       // Pass the args_type JSON value directly to allow complex definitions
@@ -88,7 +90,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "unregister_callback", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager& cm,
-                              FfiDispatcher&)
+                              FfiDispatcher&, std::map<std::string, json>&, int&)
     {
       std::string cb_id = payload["callback_id"].asString();
       cm.unregisterCallback(cb_id);
@@ -97,7 +99,7 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
   },
   {
     "call_function", [](const json& payload, json& resp, LibManager& lib, StructManager&, CallbackManager&,
-                        FfiDispatcher& ffi)
+                        FfiDispatcher& ffi, std::map<std::string, json>&, int&)
     {
       std::string lib_id = payload["library_id"].asString();
       std::string func_name = payload["function_name"].asString();
@@ -105,6 +107,32 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
       json result = ffi.call_function(func_ptr, payload);
       resp["status"] = "success";
       resp["data"] = result;
+    }
+  },
+  {
+    "register_cleanup", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager&,
+                           FfiDispatcher&, std::map<std::string, json>& cleanup_tasks, int& cleanup_counter)
+    {
+      // 注册一个清理任务，参数格式与 call_function 类似
+      cleanup_counter++;
+      std::string cleanup_id = "cleanup-" + std::to_string(cleanup_counter);
+      cleanup_tasks[cleanup_id] = payload;
+      
+      resp["status"] = "success";
+      resp["data"]["cleanup_id"] = cleanup_id;
+    }
+  },
+  {
+    "cancel_cleanup", [](const json& payload, json& resp, LibManager&, StructManager&, CallbackManager&,
+                           FfiDispatcher&, std::map<std::string, json>& cleanup_tasks, int&)
+    {
+      std::string cleanup_id = payload["cleanup_id"].asString();
+      if (cleanup_tasks.erase(cleanup_id) > 0) {
+        resp["status"] = "success";
+      } else {
+        resp["status"] = "error";
+        resp["error_message"] = "Cleanup task not found: " + cleanup_id;
+      }
     }
   }
 };
@@ -114,7 +142,9 @@ std::string handle_session_request(
   LibManager& lib_manager,
   StructManager& struct_manager,
   CallbackManager& callback_manager,
-  FfiDispatcher& ffi_dispatcher)
+  FfiDispatcher& ffi_dispatcher,
+  std::map<std::string, json>& cleanup_tasks,
+  int& cleanup_counter)
 {
   json response_json;
   std::string req_id = "";
@@ -156,7 +186,7 @@ std::string handle_session_request(
       }
 
       const auto& payload = request_json["payload"];
-      it->second(payload, response_json, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+      it->second(payload, response_json, lib_manager, struct_manager, callback_manager, ffi_dispatcher, cleanup_tasks, cleanup_counter);
     }
     else
     {
@@ -207,6 +237,8 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   CallbackManager callback_manager(connection.get(), &struct_manager);
   LibManager lib_manager;
   FfiDispatcher ffi_dispatcher(struct_manager, &callback_manager);
+  std::map<std::string, json> cleanup_tasks;
+  int cleanup_counter = 0;
 
   while (is_running_ && connection->isOpen()) // Also check is_running_ here
   {
@@ -220,7 +252,7 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
     try
     {
       response_str = handle_session_request(
-        request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher);
+        request_str, lib_manager, struct_manager, callback_manager, ffi_dispatcher, cleanup_tasks, cleanup_counter);
     }
     catch (const std::exception& e)
     {
@@ -238,6 +270,27 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
       std::lock_guard<std::mutex> lock(g_log_mutex);
       std::cerr << "[Executor] Failed to write response. Connection lost." << std::endl;
       break;
+    }
+  }
+
+  // 执行清理任务
+  for (const auto& pair : cleanup_tasks)
+  {
+    const json& task = pair.second;
+    try
+    {
+      std::string lib_id = task["library_id"].asString();
+      std::string func_name = task["function_name"].asString();
+      
+      // 尝试获取函数并调用
+      // 注意：如果库已经被 unload_library 卸载，这里可能会抛出异常，这是预期的
+      void* func_ptr = lib_manager.get_function(lib_id, func_name);
+      ffi_dispatcher.call_function(func_ptr, task);
+    }
+    catch (const std::exception& e)
+    {
+      std::lock_guard<std::mutex> lock(g_log_mutex);
+      std::cerr << "[Executor] Cleanup task failed: " << e.what() << std::endl;
     }
   }
 }
