@@ -1,5 +1,7 @@
 #include "gtest/gtest.h"
 #include "executor.h"
+#include "ipc_server.h"
+#include "utils/base64.h"
 #include <json/json.h>
 #include <thread>
 #include <vector>
@@ -9,6 +11,8 @@
 #include <chrono>
 #include <iostream>
 #include <atomic>
+#include <cstring>
+#include <cerrno>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -46,7 +50,8 @@ json json_parse(const std::string& s)
 }
 
 // --- Test Configuration ---
-const std::string PIPE_NAME = "multi_client_test_pipe";
+static std::string g_pipe_name;
+static std::atomic<unsigned int> g_pipe_counter{0};
 const int NUM_CLIENTS = 10; // Number of concurrent clients to simulate
 
 /**
@@ -113,7 +118,7 @@ public:
     socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (socket_fd_ < 0) return false;
 
-    struct sockaddr_un addr;
+    struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     std::string path = "/tmp/" + name;
     strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
@@ -154,46 +159,98 @@ public:
 
   bool send_request(const std::string& request)
   {
-    uint32_t len = htonl(request.length());
+    if (request.empty() || request.size() > kMaxIpcFrameSize) return false;
+    uint32_t len = htonl(static_cast<uint32_t>(request.size()));
 #ifdef _WIN32
-    DWORD bytesWritten;
-    return WriteFile(pipe_handle_, &len, sizeof(len), &bytesWritten, NULL) &&
-      WriteFile(pipe_handle_, request.c_str(), request.length(), &bytesWritten, NULL);
+    return write_all(&len, sizeof(len)) && write_all(request.data(), request.size());
 #else
-    return send(socket_fd_, &len, sizeof(len), 0) != -1 &&
-      send(socket_fd_, request.c_str(), request.length(), 0) != -1;
+    return write_all(&len, sizeof(len)) && write_all(request.data(), request.size());
 #endif
+  }
+
+  bool send_request_fragmented(const std::string& request, size_t chunk_size)
+  {
+    uint32_t len = htonl(static_cast<uint32_t>(request.size()));
+    std::string frame(reinterpret_cast<const char*>(&len), sizeof(len));
+    frame += request;
+    for (size_t offset = 0; offset < frame.size(); offset += chunk_size)
+    {
+      size_t count = std::min(chunk_size, frame.size() - offset);
+      if (!write_all(frame.data() + offset, count)) return false;
+    }
+    return true;
+  }
+
+  bool send_length_only(uint32_t host_length)
+  {
+    uint32_t len = htonl(host_length);
+    return write_all(&len, sizeof(len));
   }
 
   std::string receive_response()
   {
     uint32_t net_msg_len;
 #ifdef _WIN32
-    DWORD bytesRead;
-    if (!ReadFile(pipe_handle_, &net_msg_len, sizeof(net_msg_len), &bytesRead, NULL) || bytesRead == 0) return "";
+    if (!read_exact(&net_msg_len, sizeof(net_msg_len))) return "";
 #else
-    if (recv(socket_fd_, &net_msg_len, sizeof(net_msg_len), 0) <= 0) return "";
+    if (!read_exact(&net_msg_len, sizeof(net_msg_len))) return "";
 #endif
 
     uint32_t msg_len = ntohl(net_msg_len);
-    if (msg_len == 0 || msg_len > 4096) return "";
+    if (msg_len == 0 || msg_len > kMaxIpcFrameSize) return "";
 
     std::vector<char> buffer(msg_len);
-#ifdef _WIN32
-    if (!ReadFile(pipe_handle_, buffer.data(), msg_len, &bytesRead, NULL) || bytesRead != msg_len) return "";
-#else
-    ssize_t total_read = 0;
-    while (total_read < (ssize_t)msg_len)
-    {
-      ssize_t current_read = recv(socket_fd_, buffer.data() + total_read, msg_len - total_read, 0);
-      if (current_read <= 0) return "";
-      total_read += current_read;
-    }
-#endif
+    if (!read_exact(buffer.data(), buffer.size())) return "";
     return std::string(buffer.begin(), buffer.end());
   }
 
 private:
+  bool write_all(const void* data, size_t size)
+  {
+    const char* bytes = static_cast<const char*>(data);
+    size_t total = 0;
+    while (total < size)
+    {
+#ifdef _WIN32
+      DWORD written = 0;
+      if (!WriteFile(pipe_handle_, bytes + total, static_cast<DWORD>(size - total), &written, NULL) || written == 0)
+        return false;
+      total += written;
+#else
+#ifdef MSG_NOSIGNAL
+      ssize_t written = send(socket_fd_, bytes + total, size - total, MSG_NOSIGNAL);
+#else
+      ssize_t written = send(socket_fd_, bytes + total, size - total, 0);
+#endif
+      if (written > 0) total += static_cast<size_t>(written);
+      else if (written < 0 && errno == EINTR) continue;
+      else return false;
+#endif
+    }
+    return true;
+  }
+
+  bool read_exact(void* data, size_t size)
+  {
+    char* bytes = static_cast<char*>(data);
+    size_t total = 0;
+    while (total < size)
+    {
+#ifdef _WIN32
+      DWORD count = 0;
+      if (!ReadFile(pipe_handle_, bytes + total, static_cast<DWORD>(size - total), &count, NULL) || count == 0)
+        return false;
+      total += count;
+#else
+      ssize_t count = recv(socket_fd_, bytes + total, size - total, 0);
+      if (count > 0) total += static_cast<size_t>(count);
+      else if (count < 0 && errno == EINTR) continue;
+      else return false;
+#endif
+    }
+    return true;
+  }
+
   int client_id_;
 #ifdef _WIN32
   HANDLE pipe_handle_ = INVALID_HANDLE_VALUE;
@@ -212,6 +269,13 @@ protected:
 
   void SetUp() override
   {
+    unsigned long process_id;
+#ifdef _WIN32
+    process_id = GetCurrentProcessId();
+#else
+    process_id = static_cast<unsigned long>(getpid());
+#endif
+    g_pipe_name = "rpc_test_" + std::to_string(process_id) + "_" + std::to_string(++g_pipe_counter);
     {
       std::lock_guard<std::mutex> lock(g_test_log_mutex);
       std::cout << "[Test Main] SetUp: Starting executor thread..." << std::endl;
@@ -223,7 +287,7 @@ protected:
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " started. Calling run().";
       }
-      executor_->run(PIPE_NAME);
+      executor_->run(g_pipe_name);
       {
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " finished run()." << std::endl;
@@ -275,7 +339,7 @@ bool run_client_session(int client_id, const std::string& lib_path)
       std::endl;
   }
   SimplePipeClient client(client_id);
-  if (!client.connect(PIPE_NAME))
+  if (!client.connect(g_pipe_name))
   {
     std::lock_guard<std::mutex> lock(g_test_log_mutex);
     std::cerr << "[Client " << client_id << "] Failed to connect." << std::endl;
@@ -374,7 +438,7 @@ TEST_F(MultiClientIntegrationTest, HandleMultipleClientsConcurrently)
   std::string lib_path;
 #ifdef _WIN32
 #ifdef CMAKE_BUILD_TYPE
-  lib_path = "../../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
+  lib_path = "../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
 #else
   lib_path = "../test_lib/my_lib.dll";
 #endif
@@ -413,4 +477,229 @@ TEST_F(MultiClientIntegrationTest, HandleMultipleClientsConcurrently)
   }
 
   ASSERT_TRUE(all_clients_succeeded) << "One or more client threads failed.";
+}
+
+static std::string get_test_library_path()
+{
+#ifdef _WIN32
+#ifdef CMAKE_BUILD_TYPE
+  return "../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
+#else
+  return "../test_lib/my_lib.dll";
+#endif
+#elif defined(__linux__)
+  const std::vector<std::string> paths = {"build/test_lib/my_lib.so", "../test_lib/my_lib.so", "my_lib.so"};
+#else
+  const std::vector<std::string> paths = {"../test_lib/my_lib.dylib", "build/test_lib/my_lib.dylib", "my_lib.dylib"};
+#endif
+#ifndef _WIN32
+  for (const auto& path : paths) if (access(path.c_str(), F_OK) == 0) return path;
+  return paths.front();
+#endif
+}
+
+static std::string load_test_library(SimplePipeClient& client)
+{
+  json request;
+  request["command"] = "load_library";
+  request["request_id"] = "load-large";
+  request["payload"]["path"] = get_test_library_path();
+  if (!client.send_request(json_dump(request))) return "";
+  json response = json_parse(client.receive_response());
+  if (response["status"].asString() != "success") return "";
+  return response["data"]["library_id"].asString();
+}
+
+TEST_F(MultiClientIntegrationTest, TransfersFiveMiBBufferAndKeepsFramingAligned)
+{
+  SimplePipeClient client(100);
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  const std::string library_id = load_test_library(client);
+  ASSERT_FALSE(library_id.empty());
+
+  constexpr size_t data_size = 5U * 1024U * 1024U;
+  std::string input(data_size, 'A');
+  json request;
+  request["command"] = "call_function";
+  request["request_id"] = "large-buffer";
+  request["payload"]["library_id"] = library_id;
+  request["payload"]["function_name"] = "process_buffer_inout";
+  request["payload"]["return_type"] = "int32";
+  json args(Json::arrayValue);
+  json buffer_arg;
+  buffer_arg["type"] = "buffer";
+  buffer_arg["direction"] = "inout";
+  buffer_arg["size"] = static_cast<Json::UInt64>(data_size);
+  buffer_arg["value"] = base64_encode(input);
+  args.append(buffer_arg);
+  json size_arg;
+  size_arg["type"] = "pointer";
+  size_arg["target_type"] = "int32";
+  size_arg["direction"] = "inout";
+  size_arg["value"] = static_cast<Json::Int>(data_size);
+  args.append(size_arg);
+  request["payload"]["args"] = args;
+
+  ASSERT_TRUE(client.send_request(json_dump(request)));
+  json response = json_parse(client.receive_response());
+  ASSERT_EQ(response["status"].asString(), "success") << json_dump(response);
+  std::string output = base64_decode(response["data"]["out_params"][0]["value"].asString());
+  ASSERT_EQ(output.size(), data_size);
+  EXPECT_EQ(static_cast<unsigned char>(output[0]), 0xAA);
+  EXPECT_EQ(output[1], 'B');
+  EXPECT_EQ(static_cast<unsigned char>(output[2]), 0xDE);
+  EXPECT_EQ(static_cast<unsigned char>(output[3]), 0xAD);
+
+  json follow_up;
+  follow_up["command"] = "call_function";
+  follow_up["request_id"] = "after-large";
+  follow_up["payload"]["library_id"] = library_id;
+  follow_up["payload"]["function_name"] = "add";
+  follow_up["payload"]["return_type"] = "int32";
+  json add_args(Json::arrayValue);
+  json a; a["type"] = "int32"; a["value"] = 7; add_args.append(a);
+  json b; b["type"] = "int32"; b["value"] = 8; add_args.append(b);
+  follow_up["payload"]["args"] = add_args;
+  ASSERT_TRUE(client.send_request(json_dump(follow_up)));
+  json follow_response = json_parse(client.receive_response());
+  EXPECT_EQ(follow_response["data"]["return"]["value"].asInt(), 15);
+}
+
+TEST_F(MultiClientIntegrationTest, HandlesFragmentedHeaderAndBody)
+{
+  SimplePipeClient client(101);
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  json request;
+  request["command"] = "unknown_fragmented_command";
+  request["request_id"] = "fragmented";
+  request["payload"]["padding"] = std::string(8192, 'x');
+  ASSERT_TRUE(client.send_request_fragmented(json_dump(request), 1));
+  json response = json_parse(client.receive_response());
+  EXPECT_EQ(response["request_id"].asString(), "fragmented");
+  EXPECT_EQ(response["status"].asString(), "error");
+}
+
+TEST_F(MultiClientIntegrationTest, RejectsOversizedFrameWithoutStoppingServer)
+{
+  {
+    SimplePipeClient invalid_client(102);
+    ASSERT_TRUE(invalid_client.connect(g_pipe_name));
+    ASSERT_TRUE(invalid_client.send_length_only(kMaxIpcFrameSize + 1));
+    EXPECT_TRUE(invalid_client.receive_response().empty());
+  }
+
+  SimplePipeClient healthy_client(103);
+  ASSERT_TRUE(healthy_client.connect(g_pipe_name));
+  json request;
+  request["command"] = "unknown_after_oversize";
+  request["request_id"] = "healthy";
+  request["payload"] = Json::objectValue;
+  ASSERT_TRUE(healthy_client.send_request(json_dump(request)));
+  json response = json_parse(healthy_client.receive_response());
+  EXPECT_EQ(response["request_id"].asString(), "healthy");
+  EXPECT_EQ(response["status"].asString(), "error");
+}
+
+TEST_F(MultiClientIntegrationTest, TransfersFiveMiBCallbackEvent)
+{
+  SimplePipeClient client(104);
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  const std::string library_id = load_test_library(client);
+  ASSERT_FALSE(library_id.empty());
+
+  json register_request;
+  register_request["command"] = "register_callback";
+  register_request["request_id"] = "register-large-callback";
+  register_request["payload"]["return_type"] = "void";
+  json callback_args(Json::arrayValue);
+  callback_args.append("int32");
+  json callback_buffer;
+  callback_buffer["type"] = "buffer_ptr";
+  callback_buffer["size_arg_index"] = 2;
+  callback_args.append(callback_buffer);
+  callback_args.append("int32");
+  callback_args.append("pointer");
+  register_request["payload"]["args_type"] = callback_args;
+  ASSERT_TRUE(client.send_request(json_dump(register_request)));
+  json register_response = json_parse(client.receive_response());
+  const std::string callback_id = register_response["data"]["callback_id"].asString();
+  ASSERT_FALSE(callback_id.empty());
+
+  constexpr size_t data_size = 5U * 1024U * 1024U;
+  std::string input(data_size, '\x5A');
+  json call_request;
+  call_request["command"] = "call_function";
+  call_request["request_id"] = "large-callback";
+  call_request["payload"]["library_id"] = library_id;
+  call_request["payload"]["function_name"] = "trigger_buffer_callback";
+  call_request["payload"]["return_type"] = "void";
+  json call_args(Json::arrayValue);
+  json cb; cb["type"] = "callback"; cb["value"] = callback_id; call_args.append(cb);
+  json type; type["type"] = "int32"; type["value"] = 77; call_args.append(type);
+  json data; data["type"] = "buffer"; data["direction"] = "in";
+  data["size"] = static_cast<Json::UInt64>(data_size); data["value"] = base64_encode(input); call_args.append(data);
+  json size; size["type"] = "int32"; size["value"] = static_cast<Json::Int>(data_size); call_args.append(size);
+  json context; context["type"] = "pointer"; context["value"] = 1234; call_args.append(context);
+  call_request["payload"]["args"] = call_args;
+  ASSERT_TRUE(client.send_request(json_dump(call_request)));
+
+  json event = json_parse(client.receive_response());
+  ASSERT_EQ(event["event"].asString(), "invoke_callback") << json_dump(event);
+  EXPECT_EQ(event["payload"]["args"][0]["value"].asInt(), 77);
+  EXPECT_EQ(base64_decode(event["payload"]["args"][1]["value"].asString()), input);
+  json response = json_parse(client.receive_response());
+  EXPECT_EQ(response["request_id"].asString(), "large-callback");
+  EXPECT_EQ(response["status"].asString(), "success");
+}
+
+TEST_F(MultiClientIntegrationTest, StopUnblocksIdleClientSession)
+{
+  SimplePipeClient client(105);
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  const auto start = std::chrono::steady_clock::now();
+  executor_->stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+}
+
+TEST_F(MultiClientIntegrationTest, ClientDisconnectDuringLargeResponseDoesNotStopServer)
+{
+  {
+    SimplePipeClient client(106);
+    ASSERT_TRUE(client.connect(g_pipe_name));
+    const std::string library_id = load_test_library(client);
+    ASSERT_FALSE(library_id.empty());
+
+    constexpr size_t data_size = 5U * 1024U * 1024U;
+    json request;
+    request["command"] = "call_function";
+    request["request_id"] = "disconnect-large-response";
+    request["payload"]["library_id"] = library_id;
+    request["payload"]["function_name"] = "process_buffer_inout";
+    request["payload"]["return_type"] = "int32";
+    json args(Json::arrayValue);
+    json buffer_arg;
+    buffer_arg["type"] = "buffer";
+    buffer_arg["direction"] = "out";
+    buffer_arg["size"] = static_cast<Json::UInt64>(data_size);
+    args.append(buffer_arg);
+    json size_arg;
+    size_arg["type"] = "pointer";
+    size_arg["target_type"] = "int32";
+    size_arg["direction"] = "inout";
+    size_arg["value"] = static_cast<Json::Int>(data_size);
+    args.append(size_arg);
+    request["payload"]["args"] = args;
+    ASSERT_TRUE(client.send_request(json_dump(request)));
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  SimplePipeClient healthy_client(107);
+  ASSERT_TRUE(healthy_client.connect(g_pipe_name));
+  json request;
+  request["command"] = "still-alive";
+  request["request_id"] = "after-disconnect";
+  request["payload"] = Json::objectValue;
+  ASSERT_TRUE(healthy_client.send_request(json_dump(request)));
+  json response = json_parse(healthy_client.receive_response());
+  EXPECT_EQ(response["request_id"].asString(), "after-disconnect");
 }

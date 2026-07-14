@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <mutex>
 #include <atomic>
+#include <cstring>
+#include <cerrno>
+#include <limits>
+#include <thread>
+#include <cstddef>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -30,48 +35,34 @@ public:
 
   ~WindowsConnection() override
   {
-    if (pipe_ != INVALID_HANDLE_VALUE)
-    {
-      DisconnectNamedPipe(pipe_);
-      CloseHandle(pipe_);
-    }
+    close();
   }
 
   std::string read() override
   {
-    DWORD bytesRead;
     uint32_t net_msg_len;
-    if (!ReadFile(pipe_, &net_msg_len, sizeof(net_msg_len), &bytesRead, NULL) || bytesRead == 0)
-    {
-      std::cout << "[Executor: WindowsConnection::read] Client disconnected during length header read." << std::endl;
-      is_open_ = false;
-      return "";
-    }
+    if (!readExact(&net_msg_len, sizeof(net_msg_len))) return "";
 
     uint32_t msg_len = ntohl(net_msg_len);
-    std::vector<char> buffer(msg_len);
-    if (!ReadFile(pipe_, buffer.data(), msg_len, &bytesRead, NULL) || bytesRead != msg_len)
+    if (msg_len == 0 || msg_len > kMaxIpcFrameSize)
     {
-      std::cerr << "[Executor: WindowsConnection::read] Error receiving length header" << std::endl;
-      is_open_ = false;
+      std::cerr << "[Executor: WindowsConnection::read] Invalid frame length: " << msg_len << std::endl;
+      close();
       return "";
     }
+    std::vector<char> buffer(msg_len);
+    if (!readExact(buffer.data(), buffer.size())) return "";
     return std::string(buffer.begin(), buffer.end());
   }
 
   bool write(const std::string& message) override
   {
     std::lock_guard<std::mutex> lock(write_mutex_);
-    uint32_t len = message.length();
+    if (!is_open_ || message.empty() || message.size() > kMaxIpcFrameSize ||
+        message.size() > std::numeric_limits<uint32_t>::max()) return false;
+    uint32_t len = static_cast<uint32_t>(message.size());
     uint32_t net_len = htonl(len);
-    DWORD bytesWritten;
-    if (!WriteFile(pipe_, &net_len, sizeof(net_len), &bytesWritten, NULL) ||
-      !WriteFile(pipe_, message.c_str(), len, &bytesWritten, NULL))
-    {
-      is_open_ = false;
-      return false;
-    }
-    return true;
+    return writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());
   }
 
   bool sendEvent(const json& event_json) override
@@ -83,8 +74,60 @@ public:
 
   bool isOpen() override { return is_open_; }
 
+  void close() override
+  {
+    HANDLE pipe = pipe_.exchange(INVALID_HANDLE_VALUE);
+    is_open_ = false;
+    if (pipe != INVALID_HANDLE_VALUE)
+    {
+      CancelIoEx(pipe, NULL);
+      DisconnectNamedPipe(pipe);
+      CloseHandle(pipe);
+    }
+  }
+
 private:
-  HANDLE pipe_;
+  bool readExact(void* data, size_t size)
+  {
+    auto* bytes = static_cast<unsigned char*>(data);
+    size_t total = 0;
+    while (total < size && is_open_)
+    {
+      HANDLE pipe = pipe_.load();
+      if (pipe == INVALID_HANDLE_VALUE) return false;
+      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, std::numeric_limits<DWORD>::max()));
+      DWORD bytes_read = 0;
+      if (!ReadFile(pipe, bytes + total, chunk, &bytes_read, NULL) || bytes_read == 0)
+      {
+        is_open_ = false;
+        return false;
+      }
+      total += bytes_read;
+    }
+    return total == size;
+  }
+
+  bool writeAll(const void* data, size_t size)
+  {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    size_t total = 0;
+    while (total < size && is_open_)
+    {
+      HANDLE pipe = pipe_.load();
+      if (pipe == INVALID_HANDLE_VALUE) return false;
+      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, std::numeric_limits<DWORD>::max()));
+      DWORD bytes_written = 0;
+      if (!WriteFile(pipe, bytes + total, chunk, &bytes_written, NULL) || bytes_written == 0)
+      {
+        is_open_ = false;
+        return false;
+      }
+      total += bytes_written;
+    }
+    return total == size;
+  }
+
+  std::atomic<HANDLE> pipe_;
   std::atomic<bool> is_open_;
   std::mutex write_mutex_;
 };
@@ -95,67 +138,41 @@ class UnixConnection : public ClientConnection
 public:
   explicit UnixConnection(int sock) : sock_(sock), is_open_(true)
   {
+#ifdef __APPLE__
+    int enabled = 1;
+    setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#endif
   }
 
   ~UnixConnection() override
   {
-    if (sock_ != -1)
-    {
-      close(sock_);
-    }
+    close();
   }
 
   std::string read() override
   {
     uint32_t net_msg_len;
-    ssize_t bytes_received_for_len = 0;
-    // std::cout << "[Executor: UnixConnection::read] Waiting to receive 4-byte length header..." << std::endl;
-    while (bytes_received_for_len < sizeof(net_msg_len))
-    {
-      ssize_t current_read = recv(sock_, reinterpret_cast<char*>(&net_msg_len) + bytes_received_for_len,
-                                  sizeof(net_msg_len) - bytes_received_for_len, 0);
-      if (current_read == 0)
-      {
-        std::cout << "[Executor: UnixConnection::read] Client disconnected during length header read." << std::endl;
-        is_open_ = false;
-        return "";
-      }
-      if (current_read == -1)
-      {
-        std::cerr << "[Executor: UnixConnection::read] Error receiving length header: " << strerror(errno) << std::endl;
-        is_open_ = false;
-        return "";
-      }
-      bytes_received_for_len += current_read;
-    }
+    if (!readExact(&net_msg_len, sizeof(net_msg_len))) return "";
     uint32_t msg_len = ntohl(net_msg_len);
-    std::vector<char> buffer(msg_len);
-    ssize_t total_read = 0;
-    while (total_read < (ssize_t)msg_len)
+    if (msg_len == 0 || msg_len > kMaxIpcFrameSize)
     {
-      ssize_t current_read = recv(sock_, buffer.data() + total_read, msg_len - total_read, 0);
-      if (current_read <= 0)
-      {
-        is_open_ = false;
-        return "";
-      }
-      total_read += current_read;
+      std::cerr << "[Executor: UnixConnection::read] Invalid frame length: " << msg_len << std::endl;
+      close();
+      return "";
     }
+    std::vector<char> buffer(msg_len);
+    if (!readExact(buffer.data(), buffer.size())) return "";
     return std::string(buffer.begin(), buffer.end());
   }
 
   bool write(const std::string& message) override
   {
     std::lock_guard<std::mutex> lock(write_mutex_);
-    uint32_t len = message.length();
+    if (!is_open_ || message.empty() || message.size() > kMaxIpcFrameSize ||
+        message.size() > std::numeric_limits<uint32_t>::max()) return false;
+    uint32_t len = static_cast<uint32_t>(message.size());
     uint32_t net_len = htonl(len);
-    if (send(sock_, &net_len, sizeof(net_len), 0) == -1 ||
-      send(sock_, message.c_str(), len, 0) == -1)
-    {
-      is_open_ = false;
-      return false;
-    }
-    return true;
+    return writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());
   }
 
   bool sendEvent(const json& event_json) override
@@ -167,8 +184,64 @@ public:
 
   bool isOpen() override { return is_open_; }
 
+  void close() override
+  {
+    int sock = sock_.exchange(-1);
+    is_open_ = false;
+    if (sock != -1)
+    {
+      shutdown(sock, SHUT_RDWR);
+      ::close(sock);
+    }
+  }
+
 private:
-  int sock_;
+  bool readExact(void* data, size_t size)
+  {
+    auto* bytes = static_cast<unsigned char*>(data);
+    size_t total = 0;
+    while (total < size && is_open_)
+    {
+      int sock = sock_.load();
+      if (sock == -1) return false;
+      ssize_t count = recv(sock, bytes + total, size - total, 0);
+      if (count > 0) total += static_cast<size_t>(count);
+      else if (count < 0 && errno == EINTR) continue;
+      else
+      {
+        is_open_ = false;
+        return false;
+      }
+    }
+    return total == size;
+  }
+
+  bool writeAll(const void* data, size_t size)
+  {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    size_t total = 0;
+    while (total < size && is_open_)
+    {
+      int sock = sock_.load();
+      if (sock == -1) return false;
+#ifdef MSG_NOSIGNAL
+      constexpr int flags = MSG_NOSIGNAL;
+#else
+      constexpr int flags = 0;
+#endif
+      ssize_t count = send(sock, bytes + total, size - total, flags);
+      if (count > 0) total += static_cast<size_t>(count);
+      else if (count < 0 && errno == EINTR) continue;
+      else
+      {
+        is_open_ = false;
+        return false;
+      }
+    }
+    return total == size;
+  }
+
+  std::atomic<int> sock_;
   std::atomic<bool> is_open_;
   std::mutex write_mutex_;
 };
@@ -204,7 +277,7 @@ public:
   {
     std::cout << "Waiting for client connection on " << pipe_name_ << "..." << std::endl;
     HANDLE hPipe = CreateNamedPipeA(pipe_name_.c_str(), PIPE_ACCESS_DUPLEX,
-                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
+                                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
                                     4096, 4096, 0, NULL);
 
     if (hPipe == INVALID_HANDLE_VALUE)
@@ -214,7 +287,7 @@ public:
       // throw is too aggressive in a loop, let's return null and let the runner decide.
       return nullptr;
     }
-    listener_pipe_ = hPipe;
+    listener_pipe_.store(hPipe);
 
 
     BOOL connected = ConnectNamedPipe(hPipe, NULL);
@@ -225,13 +298,12 @@ public:
 
     if (connected)
     {
-      listener_pipe_ = INVALID_HANDLE_VALUE;
+      listener_pipe_.exchange(INVALID_HANDLE_VALUE);
       std::cout << "Client connected." << std::endl;
       return std::make_unique<WindowsConnection>(hPipe);
     }
 
-    CloseHandle(hPipe);
-    listener_pipe_ = INVALID_HANDLE_VALUE;
+    if (listener_pipe_.exchange(INVALID_HANDLE_VALUE) == hPipe) CloseHandle(hPipe);
     return nullptr;
   }
 
@@ -256,17 +328,18 @@ public:
     }
     else
     {
-      if (listener_pipe_ != INVALID_HANDLE_VALUE)
+      HANDLE listener = listener_pipe_.exchange(INVALID_HANDLE_VALUE);
+      if (listener != INVALID_HANDLE_VALUE)
       {
-        CloseHandle(listener_pipe_);
-        listener_pipe_ = INVALID_HANDLE_VALUE;
+        CancelIoEx(listener, NULL);
+        CloseHandle(listener);
       }
     }
   }
 
 private:
   std::string pipe_name_;
-  HANDLE listener_pipe_ = INVALID_HANDLE_VALUE;
+  std::atomic<HANDLE> listener_pipe_{INVALID_HANDLE_VALUE};
 };
 #else
 class UnixIpcServer : public IpcServer
@@ -277,32 +350,48 @@ public:
 
   void listen(const std::string& name) override
   {
+    if (name.empty()) throw std::runtime_error("Socket name must not be empty");
     socket_path_ = "/tmp/" + name;
-    if ((server_fd_ = socket(AF_UNIX, SOCK_STREAM, 0)) == 0)
-    {
-      throw std::runtime_error("Socket creation failed");
-    }
+    if (socket_path_.size() >= sizeof(sockaddr_un{}.sun_path))
+      throw std::runtime_error("Socket path is too long: " + socket_path_);
 
-    struct sockaddr_un address;
+    int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_fd < 0)
+    {
+      throw std::runtime_error("Socket creation failed: " + std::string(strerror(errno)));
+    }
+    server_fd_.store(server_fd);
+
+    struct sockaddr_un address{};
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, socket_path_.c_str(), sizeof(address.sun_path) - 1);
     unlink(socket_path_.c_str());
 
-    if (bind(server_fd_, (struct sockaddr*)&address, sizeof(address)) < 0)
+    const socklen_t address_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socket_path_.size() + 1);
+
+    if (bind(server_fd, reinterpret_cast<struct sockaddr*>(&address), address_len) < 0)
     {
-      throw std::runtime_error("Socket bind failed for path: " + socket_path_);
+      const std::string error = strerror(errno);
+      ::close(server_fd_.exchange(-1));
+      throw std::runtime_error("Socket bind failed for path " + socket_path_ + ": " + error);
     }
 
-    if (::listen(server_fd_, 5) < 0)
+    if (::listen(server_fd, 16) < 0)
     {
-      throw std::runtime_error("Socket listen failed");
+      const std::string error = strerror(errno);
+      ::close(server_fd_.exchange(-1));
+      unlink(socket_path_.c_str());
+      throw std::runtime_error("Socket listen failed: " + error);
     }
   }
 
   std::unique_ptr<ClientConnection> accept() override
   {
     std::cout << "Waiting for client connection on " << socket_path_ << "..." << std::endl;
-    int new_socket = ::accept(server_fd_, NULL, NULL);
+    int server_fd = server_fd_.load();
+    if (server_fd == -1) return nullptr;
+    int new_socket;
+    do { new_socket = ::accept(server_fd, NULL, NULL); } while (new_socket < 0 && errno == EINTR);
     if (new_socket < 0)
     {
       return nullptr;
@@ -313,7 +402,8 @@ public:
 
   void stop() override
   {
-    if (server_fd_ == -1)
+    int server_fd = server_fd_.exchange(-1);
+    if (server_fd == -1)
     {
       return;
     }
@@ -322,22 +412,22 @@ public:
     int dummy_socket = socket(AF_UNIX, SOCK_STREAM, 0);
     if (dummy_socket != -1)
     {
-      struct sockaddr_un addr;
+      struct sockaddr_un addr{};
       addr.sun_family = AF_UNIX;
       strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
       // Connect to our own socket to unblock the accept() call. No need to check for success.
-      ::connect(dummy_socket, (struct sockaddr*)&addr, sizeof(addr));
+      const socklen_t addr_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socket_path_.size() + 1);
+      ::connect(dummy_socket, reinterpret_cast<struct sockaddr*>(&addr), addr_len);
       close(dummy_socket);
     }
 
     // Now we can safely close the original server socket.
-    close(server_fd_);
+    close(server_fd);
     unlink(socket_path_.c_str());
-    server_fd_ = -1;
   }
 
 private:
-  int server_fd_ = -1;
+  std::atomic<int> server_fd_{-1};
   std::string socket_path_;
 };
 #endif

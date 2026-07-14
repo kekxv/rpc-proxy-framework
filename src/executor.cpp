@@ -222,16 +222,46 @@ Executor::~Executor()
 
 void Executor::stop()
 {
-  is_running_ = false; // Set the flag to signal the run loop to stop
+  is_running_ = false;
   if (server)
   {
-    server->stop(); // Interrupt any blocking accept() call
+    server->stop();
+  }
+  close_active_connections();
+  join_session_threads();
+}
+
+void Executor::close_active_connections()
+{
+  std::lock_guard<std::mutex> lock(sessions_mutex_);
+  for (ClientConnection* connection : active_connections_)
+  {
+    connection->close();
+  }
+}
+
+void Executor::join_session_threads()
+{
+  std::vector<std::thread> threads;
+  {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    threads.swap(session_threads_);
+  }
+  for (auto& thread : threads)
+  {
+    if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) thread.join();
   }
 }
 
 // 处理单个客户端会话的逻辑（在独立线程中运行）
 void Executor::handle_client_session(std::unique_ptr<ClientConnection> connection)
 {
+  ClientConnection* connection_ptr = connection.get();
+  {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    active_connections_.insert(connection_ptr);
+  }
+
   // 资源隔离：每个线程/会话拥有独立的 Managers
   StructManager struct_manager;
   CallbackManager callback_manager(connection.get(), &struct_manager);
@@ -293,6 +323,11 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
       std::cerr << "[Executor] Cleanup task failed: " << e.what() << std::endl;
     }
   }
+
+  {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    active_connections_.erase(connection_ptr);
+  }
 }
 
 void Executor::run(const std::string& pipe_name)
@@ -314,10 +349,18 @@ void Executor::run(const std::string& pipe_name)
       break;
     }
 
-    // 2. Spawn a new thread to handle this client
-    std::thread([this, conn = std::move(connection)]() mutable
     {
-      this->handle_client_session(std::move(conn));
-    }).detach();
+      std::lock_guard<std::mutex> lock(sessions_mutex_);
+      if (!is_running_)
+      {
+        connection->close();
+        break;
+      }
+      std::thread session_thread([this, conn = std::move(connection)]() mutable
+      {
+        this->handle_client_session(std::move(conn));
+      });
+      session_threads_.push_back(std::move(session_thread));
+    }
   }
 }

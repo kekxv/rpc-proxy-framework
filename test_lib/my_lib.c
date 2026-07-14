@@ -295,6 +295,14 @@ DLLEXPORT void trigger_read_callback(ReadCallback cb, int type, const char* inpu
   }
 }
 
+DLLEXPORT void trigger_buffer_callback(ReadCallback cb, int type, unsigned char* data, int size, void* context)
+{
+  if (cb)
+  {
+    cb(type, data, size, context);
+  }
+}
+
 typedef void (*FixedReadCallback)(unsigned char data[], void* that);
 
 DLLEXPORT void trigger_fixed_read_callback(FixedReadCallback cb, void* context)

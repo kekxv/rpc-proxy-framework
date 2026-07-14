@@ -4,6 +4,8 @@ project(cpp_controller_example CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
+set(JSONCPP_WITH_TESTS OFF CACHE BOOL "" FORCE)
+set(JSONCPP_WITH_POST_BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
 
 # --- Add JsonCpp ---
 FetchContent_Declare(

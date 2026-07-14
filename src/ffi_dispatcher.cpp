@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 
 #include "base64.h" // Use shared Base64 utilities
+#include "ipc_server.h"
 
 #ifdef _WIN32
 #include <malloc.h>
@@ -37,14 +39,7 @@ struct AllocatedArg
   {
     if (memory)
     {
-      if (type == "buffer" || target_type.find("[]") != std::string::npos)
-      {
-        delete[] static_cast<char*>(memory);
-      }
-      else
-      {
-        delete static_cast<char*>(memory);
-      }
+      delete[] static_cast<char*>(memory);
     }
   }
 };
@@ -192,7 +187,16 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
   if (type_str == "buffer")
   {
       size_t buffer_size = arg_json["size"].asUInt64();
-      char* buffer_mem = new char[buffer_size + sizeof(ffi_arg)](); // Zero-initialize
+      if (buffer_size > kMaxIpcFrameSize || buffer_size > std::numeric_limits<size_t>::max() - sizeof(ffi_arg))
+      {
+          throw std::runtime_error("Buffer size exceeds the 64 MiB safety limit");
+      }
+      if (direction != "in" && direction != "out" && direction != "inout")
+      {
+          throw std::runtime_error("Invalid buffer direction: " + direction);
+      }
+      std::unique_ptr<char[]> buffer_holder(new char[buffer_size + sizeof(ffi_arg)]());
+      char* buffer_mem = buffer_holder.get();
 
       if (direction == "in" || direction == "inout")
       {
@@ -200,12 +204,17 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
           {
               std::string b64_data = arg_json["value"].asString();
               std::string decoded_data = base64_decode(b64_data);
-              memcpy(buffer_mem, decoded_data.data(), std::min(decoded_data.length(), buffer_size));
+              if (decoded_data.size() > buffer_size)
+              {
+                  throw std::runtime_error("Decoded buffer data exceeds declared size");
+              }
+              memcpy(buffer_mem, decoded_data.data(), decoded_data.size());
           }
       }
 
       allocated_args.emplace_back(
               std::make_unique<AllocatedArg>(index, type_str, "", buffer_mem, buffer_size, direction));
+      buffer_holder.release();
 
       return arg_storage.allocate(buffer_mem);
   }
@@ -252,7 +261,7 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
         populate_memory_from_json(struct_mem, arg_json["value"], target_type_name, arg_storage);
         return arg_storage.allocate(struct_mem);
       }
-      else if (target_type_name.back() == ']')
+      else if (!target_type_name.empty() && target_type_name.back() == ']')
       {
         std::string element_type_name = target_type_name.substr(0, target_type_name.length() - 2);
         if (struct_manager_.is_struct(element_type_name))

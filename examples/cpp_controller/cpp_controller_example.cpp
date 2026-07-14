@@ -8,6 +8,7 @@
 #include <future>
 #include <atomic>
 #include <filesystem>
+#include <cerrno>
 
 #include "json/json.h"
 #include "utils/base64.h" // Include Base64 utilities
@@ -51,6 +52,7 @@ json json_parse(const std::string& s)
 class RpcClient
 {
 public:
+  static constexpr uint32_t MAX_FRAME_SIZE = 64U * 1024U * 1024U;
 #ifdef _WIN32
   using SocketType = HANDLE;
   const SocketType RPC_INVALID_SOCKET = INVALID_HANDLE_VALUE;
@@ -140,29 +142,39 @@ public:
     }
 
     std::string request_str = json_dump(request);
-    uint32_t length = request_str.length();
+    if (request_str.empty() || request_str.size() > MAX_FRAME_SIZE)
+    {
+      std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+      pending_requests_.erase(req_id);
+      throw std::runtime_error("Request exceeds the 64 MiB frame limit");
+    }
+    uint32_t length = static_cast<uint32_t>(request_str.size());
     uint32_t network_order_length = htonl(length);
 
-    std::lock_guard<std::mutex> send_lock(send_mutex_);
-#ifdef _WIN32
-    DWORD bytes_written;
-    WriteFile(sock_, &network_order_length, 4, &bytes_written, NULL);
-    WriteFile(sock_, request_str.c_str(), length, &bytes_written, NULL);
-#else
-    write(sock_, &network_order_length, 4);
-    write(sock_, request_str.c_str(), length);
-#endif
+    {
+      std::lock_guard<std::mutex> send_lock(send_mutex_);
+      if (!write_all(&network_order_length, sizeof(network_order_length)) ||
+          !write_all(request_str.data(), request_str.size()))
+      {
+        std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+        pending_requests_.erase(req_id);
+        throw std::runtime_error("Failed to send complete request frame");
+      }
+    }
 
     std::cout << "--> Sending Request [" << request["command"].asString() << "] id=" << req_id << std::endl;
 
     // Wait for the response
-    if (future.wait_for(std::chrono::seconds(10)) == std::future_status::timeout)
+    if (future.wait_for(std::chrono::seconds(30)) == std::future_status::timeout)
     {
+      std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+      pending_requests_.erase(req_id);
       throw std::runtime_error("Timeout waiting for response for request ID " + req_id);
     }
 
     json response = future.get();
-    std::cout << "<-- Received Response for id=" << req_id << ": " << json_dump(response) << std::endl;
+    std::cout << "<-- Received Response for id=" << req_id
+              << " status=" << response.get("status", "unknown").asString() << std::endl;
     return response;
   }
 
@@ -198,42 +210,70 @@ public:
   }
 
 private:
+  bool write_all(const void* data, size_t size)
+  {
+    const char* bytes = static_cast<const char*>(data);
+    size_t total = 0;
+    while (total < size && running_)
+    {
+#ifdef _WIN32
+      DWORD count = 0;
+      if (!WriteFile(sock_, bytes + total, static_cast<DWORD>(size - total), &count, NULL) || count == 0) return false;
+#else
+#ifdef MSG_NOSIGNAL
+      ssize_t count = send(sock_, bytes + total, size - total, MSG_NOSIGNAL);
+#else
+      ssize_t count = send(sock_, bytes + total, size - total, 0);
+#endif
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) return false;
+#endif
+      total += static_cast<size_t>(count);
+    }
+    return total == size;
+  }
+
+  bool read_exact(void* data, size_t size)
+  {
+    char* bytes = static_cast<char*>(data);
+    size_t total = 0;
+    while (total < size && running_)
+    {
+#ifdef _WIN32
+      DWORD count = 0;
+      if (!ReadFile(sock_, bytes + total, static_cast<DWORD>(size - total), &count, NULL) || count == 0) return false;
+#else
+      ssize_t count = recv(sock_, bytes + total, size - total, 0);
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) return false;
+#endif
+      total += static_cast<size_t>(count);
+    }
+    return total == size;
+  }
+
   void receive_messages()
   {
     while (running_)
     {
       uint32_t network_order_response_length;
-#ifdef _WIN32
-      DWORD bytes_read;
-      if (!ReadFile(sock_, &network_order_response_length, 4, &bytes_read, NULL) || bytes_read == 0)
+      if (!read_exact(&network_order_response_length, sizeof(network_order_response_length)))
       {
         if (running_) std::cerr << "Executor disconnected." << std::endl;
         break;
       }
-#else
-      ssize_t read_bytes = read(sock_, &network_order_response_length, 4);
-      if (read_bytes <= 0)
-      {
-        if (running_) std::cerr << "Executor disconnected." << std::endl;
-        break;
-      }
-#endif
       uint32_t response_length = ntohl(network_order_response_length);
+      if (response_length == 0 || response_length > MAX_FRAME_SIZE)
+      {
+        if (running_) std::cerr << "Invalid response frame length: " << response_length << std::endl;
+        break;
+      }
       std::vector<char> response_buffer(response_length);
-#ifdef _WIN32
-      if (!ReadFile(sock_, response_buffer.data(), response_length, &bytes_read, NULL) || bytes_read == 0)
+      if (!read_exact(response_buffer.data(), response_buffer.size()))
       {
         if (running_) std::cerr << "Executor disconnected during read." << std::endl;
         break;
       }
-#else
-      read_bytes = read(sock_, response_buffer.data(), response_length);
-      if (read_bytes <= 0)
-      {
-        if (running_) std::cerr << "Executor disconnected during read." << std::endl;
-        break;
-      }
-#endif
       std::string response_str(response_buffer.begin(), response_buffer.end());
       json response = json_parse(response_str);
 
@@ -257,14 +297,23 @@ private:
       }
       else if (response.isMember("event"))
       {
-        std::cout << "<-- Received Event [" << response["event"].asString() << "]: " << json_dump(response) <<
-          std::endl;
+        std::cout << "<-- Received Event [" << response["event"].asString() << "]" << std::endl;
         {
           std::lock_guard<std::mutex> lock(event_queue_mutex_);
           event_queue_.push(response);
         }
         event_cond_.notify_one();
       }
+    }
+    std::map<std::string, std::shared_ptr<std::promise<json>>> pending;
+    {
+      std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+      pending.swap(pending_requests_);
+    }
+    for (auto& item : pending)
+    {
+      try { throw std::runtime_error("Executor disconnected"); }
+      catch (...) { item.second->set_exception(std::current_exception()); }
     }
     // Notify any waiting get_event calls that the client has disconnected
     event_cond_.notify_all();

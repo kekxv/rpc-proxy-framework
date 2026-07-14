@@ -6,6 +6,7 @@
 #include <cstdint> // Added for uintptr_t
 #include "uuid.h" // Using stduuid library
 #include "base64.h"
+#include "ipc_server.h"
 
 // Helper to convert ffi_type* to string for JSON serialization
 std::string ffiTypeToString(ffi_type* type)
@@ -256,8 +257,13 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
             }
             
             if (size > 0) {
-                arg_data["value"] = base64_encode(static_cast<unsigned char*>(ptr), (size_t)size);
                 arg_data["size"] = (Json::UInt64)size;
+                if (static_cast<uint64_t>(size) > kMaxIpcFrameSize) {
+                    arg_data["value"] = Json::nullValue;
+                    arg_data["error"] = "Callback buffer exceeds the 64 MiB safety limit";
+                } else {
+                    arg_data["value"] = base64_encode(static_cast<unsigned char*>(ptr), (size_t)size);
+                }
             } else {
                 arg_data["value"] = "";
                 arg_data["size"] = 0;

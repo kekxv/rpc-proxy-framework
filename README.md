@@ -60,6 +60,8 @@
     3.  进入一个循环：等待 `Controller` 连接 -> 读取一个完整的JSON请求 -> 交给协议解析器处理 -> 将处理结果（JSON响应）写回管道 -> 断开连接（或保持长连接，视设计而定，短连接更简单）。
     4.  需要一个简单的协议来处理数据分包问题，例如，在发送每条JSON消息前，先发送一个4字节的长度头（Header）。
 
+每个消息帧使用4字节大端无符号长度，后接UTF-8 JSON正文。Controller 和 Executor 都必须循环读写直到整个头部和正文完成，不能假定一次系统调用会传输完整数据。单帧上限为 **64 MiB**；超限连接会被关闭，但不会影响其他客户端。二进制 buffer 使用 Base64 放入 JSON，线上的数据通常会比原始数据增大约三分之一，例如5 MiB原始数据会形成约6.7 MiB以上的JSON帧。
+
 ### 5.2. 动态库管理器 (Dynamic Library Manager)
 
 *   **职责**: 负责加载、卸载和查找动态库及其中的函数。
@@ -204,6 +206,8 @@
 >   "value": "SGVsbG8gd29ybGQ=" // Base64 encoded "Hello world"
 > }
 > ```
+
+> buffer 的声明大小和序列化后的完整消息都必须满足64 MiB安全限制。对于 `out`/`inout` buffer，还应为 Base64 和 JSON 包装预留空间。
 ### 响应 (Response)
 ```json5
 {
@@ -262,6 +266,8 @@
 ## 6.1. 异步事件 (Asynchronous Events)
 
 为了支持回调函数，通信模型扩展为双向的。`executor` 可以在任何时候主动向 `controller` 发送事件。这些事件没有 `request_id`，因为它们不是对某个请求的响应。
+
+如果动态库在自建线程中调用回调，调用方必须先停止并等待这些原生线程结束，再注销回调、卸载动态库或断开会话。否则原生线程可能继续调用已经释放的 libffi trampoline，这超出框架能够自动判断的生命周期范围。
 
 ### 事件 (Event)
 ```json
@@ -1098,4 +1104,3 @@ python3 examples/python_controller/controller.py my_pipe
 当 `controller` 运行结束后，`executor` 进程会继续运行，等待下一次连接。您可以按 `Ctrl+C` 来终止它。
 
 当 `controller` 运行结束后，`executor` 进程会继续运行，等待下一次连接。您可以按 `Ctrl+C` 来终止它。
-

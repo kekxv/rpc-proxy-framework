@@ -9,6 +9,8 @@ import queue
 import time
 import base64
 
+MAX_FRAME_SIZE = 64 * 1024 * 1024
+
 # --- 新增：用于彩色输出的类 ---
 class Colors:
   """用于在终端输出彩色文本的 ANSI 转义码"""
@@ -43,6 +45,8 @@ class RpcProxyClient:
     self.receiver_thread = None
     self.running = False
     self.pending_requests = {} # To store futures for responses
+    self.pending_lock = threading.Lock()
+    self.send_lock = threading.Lock()
 
   def connect(self):
     """根据操作系统连接到命名管道或Unix套接字"""
@@ -78,23 +82,22 @@ class RpcProxyClient:
     while self.running:
       try:
         # Read message length
-        len_bytes = self.sock.recv(4)
+        len_bytes = self._recv_exact(4)
         if not len_bytes:
           print(f"{Colors.YELLOW}Executor disconnected.{Colors.RESET}")
           self.running = False
           break
         
         message_len = struct.unpack('>I', len_bytes)[0]
+        if message_len <= 0 or message_len > MAX_FRAME_SIZE:
+          raise ConnectionError(f"Invalid RPC frame length: {message_len}")
         
         # Read message data
-        message_bytes = b''
-        while len(message_bytes) < message_len:
-          packet = self.sock.recv(message_len - len(message_bytes))
-          if not packet:
-            print(f"{Colors.RED}Executor disconnected during message read.{Colors.RESET}")
-            self.running = False
-            break
-          message_bytes += packet
+        message_bytes = self._recv_exact(message_len)
+        if not message_bytes:
+          print(f"{Colors.RED}Executor disconnected during message read.{Colors.RESET}")
+          self.running = False
+          break
         
         if not self.running: # Check if shutdown was initiated during read
             break
@@ -104,20 +107,18 @@ class RpcProxyClient:
         if "request_id" in message_data:
           # This is a response to a request
           req_id = message_data["request_id"]
-          if req_id in self.pending_requests:
-            self.pending_requests[req_id].set_result(message_data)
-            del self.pending_requests[req_id]
+          with self.pending_lock:
+            pending = self.pending_requests.pop(req_id, None)
+          if pending:
+            pending.set_result(message_data)
           else:
             print(f"{Colors.YELLOW}Received unexpected response for ID {req_id}:{Colors.RESET}")
-            print(json.dumps(message_data, indent=None))
         elif "event" in message_data:
           # This is an asynchronous event
           self.event_queue.put(message_data)
           print(f"{Colors.MAGENTA}<-- Received Event [{message_data['event']}]:{Colors.RESET}")
-          print(json.dumps(message_data, indent=None))
         else:
           print(f"{Colors.YELLOW}Received unknown message type:{Colors.RESET}")
-          print(json.dumps(message_data, indent=None))
 
       except socket.timeout:
         pass # No data, continue loop
@@ -128,6 +129,17 @@ class RpcProxyClient:
         break
     print(f"{Colors.BRIGHT_CYAN}Receiver thread stopped.{Colors.RESET}")
 
+  def _recv_exact(self, size):
+    data = bytearray(size)
+    view = memoryview(data)
+    total = 0
+    while total < size:
+      count = self.sock.recv_into(view[total:], size - total)
+      if count == 0:
+        return None
+      total += count
+    return bytes(data)
+
 
   def _send_request(self, request_json):
     """发送请求并等待响应"""
@@ -136,25 +148,31 @@ class RpcProxyClient:
 
     req_id = request_json["request_id"]
     future_response = EventWithResult() # Use the custom event class that can hold a result
-    self.pending_requests[req_id] = future_response
+    with self.pending_lock:
+      self.pending_requests[req_id] = future_response
 
     # --- 打印发送的请求 ---
     print(f"{Colors.BRIGHT_CYAN}--> Sending Request [{request_json['command']}] id={req_id}:{Colors.RESET}")
-    print(json.dumps(request_json, indent=None))
 
     message = json.dumps(request_json).encode('utf-8')
+    if not 0 < len(message) <= MAX_FRAME_SIZE:
+      with self.pending_lock:
+        self.pending_requests.pop(req_id, None)
+      raise ValueError(f"RPC request exceeds the {MAX_FRAME_SIZE} byte frame limit")
     try:
-      self.sock.sendall(struct.pack('>I', len(message)))
-      self.sock.sendall(message)
+      with self.send_lock:
+        self.sock.sendall(struct.pack('>I', len(message)))
+        self.sock.sendall(message)
     except socket.error as e:
-      del self.pending_requests[req_id]
+      with self.pending_lock:
+        self.pending_requests.pop(req_id, None)
       raise ConnectionError(f"Failed to send request: {e}")
 
     # Wait for the response
-    future_response.wait(timeout=10) # Wait for response, with a timeout
+    future_response.wait(timeout=30) # Large Base64/JSON payloads need additional processing time.
     if not future_response.is_set():
-        if req_id in self.pending_requests:
-            del self.pending_requests[req_id]
+        with self.pending_lock:
+            self.pending_requests.pop(req_id, None)
         raise TimeoutError(f"Timeout waiting for response for request ID {req_id}")
     
     response_data = future_response.result() # Get the result set by the receiver thread
@@ -162,7 +180,6 @@ class RpcProxyClient:
     # --- 打印接收到的响应 ---
     response_color = Colors.BRIGHT_GREEN if response_data.get("status") == "success" else Colors.BRIGHT_RED
     print(f"{response_color}<-- Received Response for id={req_id}:{Colors.RESET}")
-    print(json.dumps(response_data, indent=None))
 
     return response_data
 
@@ -718,6 +735,8 @@ class SimpleClient:
   def send(self, data):
     """打包并发送数据"""
     message = json.dumps(data).encode('utf-8')
+    if not 0 < len(message) <= MAX_FRAME_SIZE:
+      raise ValueError(f"RPC request exceeds the {MAX_FRAME_SIZE} byte frame limit")
     packed_len = struct.pack('>I', len(message))
 
     if self.is_windows:
@@ -730,25 +749,35 @@ class SimpleClient:
   def receive(self):
     """接收并解包数据"""
     if self.is_windows:
-      hr, packed_len = win32file.ReadFile(self.connection, 4)
+      packed_len = self._read_exact(4)
       if not packed_len: return None
     else:
-      packed_len = self.connection.recv(4)
+      packed_len = self._read_exact(4)
       if not packed_len: return None
 
     msg_len = struct.unpack('>I', packed_len)[0]
+    if msg_len <= 0 or msg_len > MAX_FRAME_SIZE:
+      raise ConnectionError(f"Invalid RPC frame length: {msg_len}")
 
-    if self.is_windows:
-      hr, message = win32file.ReadFile(self.connection, msg_len)
-    else:
-      # Unix socket需要循环读取以保证接收完整
-      message = b''
-      while len(message) < msg_len:
-        packet = self.connection.recv(msg_len - len(message))
-        if not packet: break
-        message += packet
+    message = self._read_exact(msg_len)
+    if not message:
+      return None
 
     return json.loads(message.decode('utf-8'))
+
+  def _read_exact(self, size):
+    chunks = []
+    remaining = size
+    while remaining:
+      if self.is_windows:
+        _, chunk = win32file.ReadFile(self.connection, remaining)
+      else:
+        chunk = self.connection.recv(remaining)
+      if not chunk:
+        return None
+      chunks.append(chunk)
+      remaining -= len(chunk)
+    return b''.join(chunks)
 
   def _get_next_request_id(self):
     self._request_id_counter += 1

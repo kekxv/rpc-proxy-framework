@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class RpcClient implements AutoCloseable {
 
+  private static final int MAX_FRAME_SIZE = 64 * 1024 * 1024;
+
   public boolean isAlive() {
     return running.get();
   }
@@ -134,20 +136,18 @@ public class RpcClient implements AutoCloseable {
         if (b == null) throw new NullPointerException();
         if (off < 0 || len < 0 || off + len > b.length) throw new IndexOutOfBoundsException();
 
-        byte[] dataToWrite;
-        if (off == 0 && len == b.length) {
-          dataToWrite = b;
-        } else {
-          dataToWrite = new byte[len];
-          System.arraycopy(b, off, dataToWrite, 0, len);
-        }
-
-        IntByReference written = new IntByReference();
-        boolean success = WinKernel32.INSTANCE.WriteFile(
-          windowsHandle, dataToWrite, len, written, null);
-
-        if (!success) {
-          throw new IOException("WriteFile failed. Error: " + WinKernel32.INSTANCE.GetLastError());
+        int total = 0;
+        while (total < len) {
+          int remaining = Math.min(len - total, 1024 * 1024);
+          byte[] dataToWrite = new byte[remaining];
+          System.arraycopy(b, off + total, dataToWrite, 0, remaining);
+          IntByReference written = new IntByReference();
+          boolean success = WinKernel32.INSTANCE.WriteFile(
+            windowsHandle, dataToWrite, remaining, written, null);
+          if (!success || written.getValue() <= 0) {
+            throw new IOException("WriteFile failed. Error: " + WinKernel32.INSTANCE.GetLastError());
+          }
+          total += written.getValue();
         }
       }
     });
@@ -202,6 +202,7 @@ public class RpcClient implements AutoCloseable {
 
           // 3. 有数据了，读取
           int bodyLen = readIntWin();
+          validateFrameLength(bodyLen);
           byte[] bodyBytes = readFullyWin(bodyLen);
 
           String jsonStr = new String(bodyBytes, StandardCharsets.UTF_8);
@@ -210,6 +211,7 @@ public class RpcClient implements AutoCloseable {
         } else if (unixInputStream != null) {
           // Unix 模式 (保持不变)
           int bodyLen = unixInputStream.readInt();
+          validateFrameLength(bodyLen);
           byte[] bodyBytes = new byte[bodyLen];
           unixInputStream.readFully(bodyBytes);
           processMessage(new String(bodyBytes, StandardCharsets.UTF_8));
@@ -241,30 +243,27 @@ public class RpcClient implements AutoCloseable {
   // Windows 辅助读取：byte[]
   private byte[] readFullyWin(int len) throws IOException {
     byte[] buf = new byte[len];
-    IntByReference bytesRead = new IntByReference();
     int total = 0;
 
-    // 循环确保读满
     while (total < len) {
-      // 注意：这里没有 offset 参数，所以每次需要临时计算
-      // 简单实现：由于我们 Peek 过了，绝大多数情况一次就能读满
-      // 如果遇到拆包，对于 JNA byte[] 映射来说处理 offset 比较麻烦
-      // 这里假设 pipe 数据是连续到达的
-      if (total > 0) {
-        // 如果真的发生了分段读取，需要复杂处理，这里为了简化省略
-        // 实际上 PeekNamedPipe 保证了数据量，通常一次 ReadFile 就够了
-        throw new IOException("Partial read occurred in JNA mode, implementation simplified.");
-      }
-
+      byte[] chunk = new byte[Math.min(len - total, 1024 * 1024)];
+      IntByReference bytesRead = new IntByReference();
       boolean success = WinKernel32.INSTANCE.ReadFile(
-        windowsHandle, buf, len, bytesRead, null);
+        windowsHandle, chunk, chunk.length, bytesRead, null);
 
       if (!success || bytesRead.getValue() == 0) {
         throw new EOFException();
       }
+      System.arraycopy(chunk, 0, buf, total, bytesRead.getValue());
       total += bytesRead.getValue();
     }
     return buf;
+  }
+
+  private void validateFrameLength(int len) throws IOException {
+    if (len <= 0 || len > MAX_FRAME_SIZE) {
+      throw new IOException("Invalid RPC frame length: " + len);
+    }
   }
 
   private void processMessage(String jsonStr) {
@@ -298,6 +297,7 @@ public class RpcClient implements AutoCloseable {
 
     try {
       byte[] bodyBytes = reqToSend.toString().getBytes(StandardCharsets.UTF_8);
+      validateFrameLength(bodyBytes.length);
       synchronized (sendLock) {
         if (!running.get()) throw new IOException("Client closed");
         outputStream.writeInt(bodyBytes.length);
@@ -313,7 +313,7 @@ public class RpcClient implements AutoCloseable {
 
   // 兼容旧接口
   public JSONObject sendRequest(JSONObject request) throws Exception {
-    return sendRequest(request, 10, TimeUnit.SECONDS);
+    return sendRequest(request, 30, TimeUnit.SECONDS);
   }
 
   public JSONObject getEvent(long timeout, TimeUnit unit) throws InterruptedException {

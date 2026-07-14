@@ -51,6 +51,7 @@ public:
   }
 
   bool isOpen() override { return true; }
+  void close() override {}
 };
 
 class ExecutorTest : public ::testing::Test
@@ -105,7 +106,7 @@ protected:
 
 #ifdef _WIN32
 #ifdef CMAKE_BUILD_TYPE
-    std::string lib_path = "../../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
+    std::string lib_path = "../test_lib/" CMAKE_BUILD_TYPE "/my_lib.dll";
 #else
     std::string lib_path = "../test_lib/my_lib.dll";
 #endif
@@ -127,6 +128,7 @@ protected:
       {
       }
     }
+    ASSERT_FALSE(test_lib_id.empty()) << "Unable to load the test library";
   }
 
   void TearDown() override
@@ -469,6 +471,54 @@ TEST_F(ExecutorTest, ProcessBufferInout)
 
   json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload);
   ASSERT_EQ(result["return"]["value"].asInt(), 0);
+}
+
+TEST_F(ExecutorTest, ProcessFiveMiBBufferInout)
+{
+  constexpr size_t data_size = 5U * 1024U * 1024U;
+  std::string input(data_size, 'A');
+  json payload;
+  payload["library_id"] = test_lib_id;
+  payload["function_name"] = "process_buffer_inout";
+  payload["return_type"] = "int32";
+
+  json args(Json::arrayValue);
+  json buffer_arg;
+  buffer_arg["type"] = "buffer";
+  buffer_arg["direction"] = "inout";
+  buffer_arg["size"] = static_cast<Json::UInt64>(data_size);
+  buffer_arg["value"] = base64_encode(input);
+  args.append(buffer_arg);
+  json size_arg;
+  size_arg["type"] = "pointer";
+  size_arg["target_type"] = "int32";
+  size_arg["direction"] = "inout";
+  size_arg["value"] = static_cast<Json::Int>(data_size);
+  args.append(size_arg);
+  payload["args"] = args;
+
+  json result = ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload);
+  ASSERT_EQ(result["return"]["value"].asInt(), 0);
+  std::string output = base64_decode(result["out_params"][0]["value"].asString());
+  ASSERT_EQ(output.size(), data_size);
+  EXPECT_EQ(static_cast<unsigned char>(output[0]), 0xAA);
+  EXPECT_EQ(output[1], 'B');
+}
+
+TEST_F(ExecutorTest, RejectsBufferAboveSafetyLimit)
+{
+  json payload;
+  payload["return_type"] = "int32";
+  json args(Json::arrayValue);
+  json buffer_arg;
+  buffer_arg["type"] = "buffer";
+  buffer_arg["direction"] = "out";
+  buffer_arg["size"] = static_cast<Json::UInt64>(kMaxIpcFrameSize) + 1;
+  args.append(buffer_arg);
+  payload["args"] = args;
+  EXPECT_THROW(
+    ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "process_buffer_inout"), payload),
+    std::runtime_error);
 }
 
 TEST_F(ExecutorTest, TriggerReadCallback)

@@ -3,7 +3,10 @@
 
 #include <string>
 #include <memory>
+#include <cstdint>
 #include <json/json.h>
+
+inline constexpr uint32_t kMaxIpcFrameSize = 64U * 1024U * 1024U;
 
 // Represents a single client connection
 class ClientConnection {
@@ -13,6 +16,7 @@ public:
     virtual bool write(const std::string& message) = 0;
     virtual bool sendEvent(const Json::Value& event_json) = 0;
     virtual bool isOpen() = 0;
+    virtual void close() = 0;
 };
 
 // Abstract base class for the IPC server
