@@ -1,4 +1,7 @@
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #include <namedpipeapi.h>
@@ -438,7 +441,10 @@ TEST_F(ExecutorTest, ThreadMultiCallbacksFunction)
   payload["args"] = args;
 
   ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "call_thread_multi_callbacks"), payload);
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  json wait_payload;
+  wait_payload["return_type"] = "void";
+  wait_payload["args"] = Json::arrayValue;
+  ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "wait_for_thread_callbacks"), wait_payload);
   ASSERT_EQ(dummy_connection.last_event["event"].asString(), "invoke_callback");
 }
 

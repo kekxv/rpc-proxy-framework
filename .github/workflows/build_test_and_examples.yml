@@ -96,6 +96,7 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    needs: [test-examples-linux]
     steps:
     - uses: actions/checkout@v4
 

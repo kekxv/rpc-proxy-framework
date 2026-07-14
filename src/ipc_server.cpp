@@ -12,6 +12,9 @@
 #include <cstddef>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #else
@@ -59,7 +62,7 @@ public:
   {
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (!is_open_ || message.empty() || message.size() > kMaxIpcFrameSize ||
-        message.size() > std::numeric_limits<uint32_t>::max()) return false;
+        message.size() > (std::numeric_limits<uint32_t>::max)()) return false;
     uint32_t len = static_cast<uint32_t>(message.size());
     uint32_t net_len = htonl(len);
     return writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());
@@ -95,7 +98,7 @@ private:
     {
       HANDLE pipe = pipe_.load();
       if (pipe == INVALID_HANDLE_VALUE) return false;
-      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, std::numeric_limits<DWORD>::max()));
+      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, (std::numeric_limits<DWORD>::max)()));
       DWORD bytes_read = 0;
       if (!ReadFile(pipe, bytes + total, chunk, &bytes_read, NULL) || bytes_read == 0)
       {
@@ -115,7 +118,7 @@ private:
     {
       HANDLE pipe = pipe_.load();
       if (pipe == INVALID_HANDLE_VALUE) return false;
-      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, std::numeric_limits<DWORD>::max()));
+      DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - total, (std::numeric_limits<DWORD>::max)()));
       DWORD bytes_written = 0;
       if (!WriteFile(pipe, bytes + total, chunk, &bytes_written, NULL) || bytes_written == 0)
       {
@@ -169,7 +172,7 @@ public:
   {
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (!is_open_ || message.empty() || message.size() > kMaxIpcFrameSize ||
-        message.size() > std::numeric_limits<uint32_t>::max()) return false;
+        message.size() > (std::numeric_limits<uint32_t>::max)()) return false;
     uint32_t len = static_cast<uint32_t>(message.size());
     uint32_t net_len = htonl(len);
     return writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());

@@ -187,7 +187,7 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
   if (type_str == "buffer")
   {
       size_t buffer_size = arg_json["size"].asUInt64();
-      if (buffer_size > kMaxIpcFrameSize || buffer_size > std::numeric_limits<size_t>::max() - sizeof(ffi_arg))
+      if (buffer_size > kMaxIpcFrameSize || buffer_size > (std::numeric_limits<size_t>::max)() - sizeof(ffi_arg))
       {
           throw std::runtime_error("Buffer size exceeds the 64 MiB safety limit");
       }

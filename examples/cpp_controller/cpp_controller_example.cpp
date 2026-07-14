@@ -14,6 +14,9 @@
 #include "utils/base64.h" // Include Base64 utilities
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <namedpipeapi.h>
 #include <winsock2.h>

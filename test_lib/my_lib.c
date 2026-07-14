@@ -125,12 +125,51 @@ typedef struct
   int count;
 } ThreadArgs;
 
+#ifdef _WIN32
+static volatile LONG active_callback_threads = 0;
+
+static void callback_thread_started(void) { InterlockedIncrement(&active_callback_threads); }
+static void callback_thread_finished(void) { InterlockedDecrement(&active_callback_threads); }
+
+DLLEXPORT void wait_for_thread_callbacks(void)
+{
+  while (InterlockedCompareExchange(&active_callback_threads, 0, 0) > 0) Sleep(10);
+}
+#else
+static pthread_mutex_t callback_threads_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t callback_threads_cond = PTHREAD_COND_INITIALIZER;
+static int active_callback_threads = 0;
+
+static void callback_thread_started(void)
+{
+  pthread_mutex_lock(&callback_threads_mutex);
+  ++active_callback_threads;
+  pthread_mutex_unlock(&callback_threads_mutex);
+}
+
+static void callback_thread_finished(void)
+{
+  pthread_mutex_lock(&callback_threads_mutex);
+  --active_callback_threads;
+  pthread_cond_broadcast(&callback_threads_cond);
+  pthread_mutex_unlock(&callback_threads_mutex);
+}
+
+DLLEXPORT void wait_for_thread_callbacks(void)
+{
+  pthread_mutex_lock(&callback_threads_mutex);
+  while (active_callback_threads > 0) pthread_cond_wait(&callback_threads_cond, &callback_threads_mutex);
+  pthread_mutex_unlock(&callback_threads_mutex);
+}
+#endif
+
 // 2. 实际的工作逻辑函数（通用逻辑）
 void run_callbacks_logic(ThreadArgs* args)
 {
   if (!args || !args->callback_fn)
   {
     if (args) free(args);
+    callback_thread_finished();
     return;
   }
 
@@ -159,6 +198,7 @@ void run_callbacks_logic(ThreadArgs* args)
 
   // 3. 重要：释放主线程分配的内存
   free(args);
+  callback_thread_finished();
 }
 
 // 4. Windows 线程入口函数
@@ -200,6 +240,7 @@ DLLEXPORT void call_thread_multi_callbacks(void (*callback_fn)(const char* messa
   args->count = count;
 
   printf("Main native function spawning thread...\n");
+  callback_thread_started();
 
 #ifdef _WIN32
   // Windows 创建线程
@@ -215,10 +256,10 @@ DLLEXPORT void call_thread_multi_callbacks(void (*callback_fn)(const char* messa
   {
     printf("Error creating Windows thread.\n");
     free(args); // 创建失败需手动释放
+    callback_thread_finished();
   }
   else
   {
-    // 不需要等待线程结束，让它在后台运行
     CloseHandle(hThread);
   }
 
@@ -231,10 +272,10 @@ DLLEXPORT void call_thread_multi_callbacks(void (*callback_fn)(const char* messa
   {
     printf("Error creating Linux thread.\n");
     free(args); // 创建失败需手动释放
+    callback_thread_finished();
   }
   else
   {
-    // 分离线程，使其结束后自动释放资源，不需要主线程 join
     pthread_detach(thread_id);
   }
 #endif
