@@ -8,6 +8,10 @@
 #include "base64.h"
 #include "ipc_server.h"
 
+#ifdef _WIN32
+#include <rpc.h>
+#endif
+
 // Helper to convert ffi_type* to string for JSON serialization
 std::string ffiTypeToString(ffi_type* type)
 {
@@ -45,6 +49,23 @@ CallbackManager::~CallbackManager()
 
 std::string CallbackManager::generateUniqueId()
 {
+#ifdef _WIN32
+  UUID uuid;
+  RPC_STATUS status = UuidCreate(&uuid);
+  if (status != RPC_S_OK && status != RPC_S_UUID_LOCAL_ONLY)
+  {
+    throw std::runtime_error("UuidCreate failed: " + std::to_string(status));
+  }
+  RPC_CSTR uuid_string = nullptr;
+  status = UuidToStringA(&uuid, &uuid_string);
+  if (status != RPC_S_OK)
+  {
+    throw std::runtime_error("UuidToStringA failed: " + std::to_string(status));
+  }
+  std::string result = "cb-" + std::string(reinterpret_cast<const char*>(uuid_string));
+  RpcStringFreeA(&uuid_string);
+  return result;
+#else
   std::random_device rd;
   auto seed_data = std::array<int, std::mt19937::state_size>{};
   std::generate(std::begin(seed_data), std::end(seed_data), std::ref(rd));
@@ -53,6 +74,7 @@ std::string CallbackManager::generateUniqueId()
   uuids::uuid_random_generator gen{generator};
   uuids::uuid id = gen();
   return "cb-" + uuids::to_string(id);
+#endif
 }
 
 ffi_type* CallbackManager::getFfiType(const std::string& type_name)

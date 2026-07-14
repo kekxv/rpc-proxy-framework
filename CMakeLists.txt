@@ -8,10 +8,24 @@ set(BUILD_SHARED_LIBS OFF)
 set(JSONCPP_WITH_TESTS OFF CACHE BOOL "" FORCE)
 set(JSONCPP_WITH_POST_BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
 
+# Keep the produced Windows binaries compatible with Windows 7 SP1.
+# These definitions must be visible before FetchContent dependencies are added,
+# because the MSVC STL selects its system_clock implementation from them.
+if(WIN32)
+    add_compile_definitions(
+        WINVER=0x0601
+        _WIN32_WINNT=0x0601
+        NTDDI_VERSION=0x06010000
+        PSAPI_VERSION=1
+        NOMINMAX
+    )
+endif()
+
 # 设定 MSVC 的运行时库为静态链接
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_link_options("/SUBSYSTEM:CONSOLE,6.01")
 endif()
 
 include(FetchContent)
@@ -114,7 +128,7 @@ if (UNIX AND NOT APPLE)
     target_link_libraries(executor_core PRIVATE dl)
 endif ()
 if (WIN32)
-    target_link_libraries(executor_core PRIVATE ws2_32.lib)
+    target_link_libraries(executor_core PRIVATE ws2_32.lib Rpcrt4.lib)
     # 添加一个 post-build 事件
     add_custom_command(
             TARGET executor_core

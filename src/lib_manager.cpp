@@ -2,10 +2,12 @@
 
 #include <iostream>
 #include <stdexcept>
-#include <random>
 #include <sstream>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <rpc.h>
+#else
+#include <random>
 #include <dlfcn.h>
 #endif
 
@@ -24,6 +26,23 @@ LibManager::~LibManager()
 
 std::string LibManager::generate_uuid()
 {
+#ifdef _WIN32
+  UUID uuid;
+  RPC_STATUS status = UuidCreate(&uuid);
+  if (status != RPC_S_OK && status != RPC_S_UUID_LOCAL_ONLY)
+  {
+    throw std::runtime_error("UuidCreate failed: " + std::to_string(status));
+  }
+  RPC_CSTR uuid_string = nullptr;
+  status = UuidToStringA(&uuid, &uuid_string);
+  if (status != RPC_S_OK)
+  {
+    throw std::runtime_error("UuidToStringA failed: " + std::to_string(status));
+  }
+  std::string result(reinterpret_cast<const char*>(uuid_string));
+  RpcStringFreeA(&uuid_string);
+  return result;
+#else
   static std::random_device rd;
   static std::mt19937 gen(rd());
   static std::uniform_int_distribution<> dis(0, 15);
@@ -42,6 +61,7 @@ std::string LibManager::generate_uuid()
   ss << "-";
   for (int i = 0; i < 12; i++) ss << dis(gen);
   return ss.str();
+#endif
 }
 
 std::string LibManager::load_library(const std::string& path)

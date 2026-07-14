@@ -114,7 +114,7 @@ jobs:
       timeout-minutes: 2
 
   build-windows-x64:
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: [test-examples-linux]
     steps:
     - uses: actions/checkout@v4
@@ -124,6 +124,17 @@ jobs:
 
     - name: Build (x64)
       run: cmake --build build --config Release
+
+    - name: Verify Windows 7 imports (x64)
+      shell: pwsh
+      run: |
+        $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+          Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $dumpbin) { throw "dumpbin.exe not found" }
+        $imports = & $dumpbin.FullName /imports "build\Release\executor.exe" | Out-String
+        if ($imports -match "GetSystemTimePreciseAsFileTime") {
+          throw "executor.exe imports GetSystemTimePreciseAsFileTime and is not Windows 7 compatible"
+        }
 
     - name: Test (x64)
       run: ctest --test-dir build --output-on-failure -C Release --timeout 55
@@ -151,7 +162,7 @@ jobs:
           libffi-8.dll
 
   build-windows-x86:
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: [test-examples-linux]
     steps:
     - uses: actions/checkout@v4
@@ -161,6 +172,17 @@ jobs:
 
     - name: Build (x86)
       run: cmake --build build --config Release
+
+    - name: Verify Windows 7 imports (x86)
+      shell: pwsh
+      run: |
+        $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+          Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $dumpbin) { throw "dumpbin.exe not found" }
+        $imports = & $dumpbin.FullName /imports "build\Release\executor.exe" | Out-String
+        if ($imports -match "GetSystemTimePreciseAsFileTime") {
+          throw "executor.exe imports GetSystemTimePreciseAsFileTime and is not Windows 7 compatible"
+        }
 
     - name: Test (x86)
       run: ctest --test-dir build --output-on-failure -C Release --timeout 55
