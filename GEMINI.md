@@ -93,13 +93,21 @@
 ### 请求 (Request)
 ```json5
 {
-  "command": "load_library | unload_library | register_struct | unregister_struct | register_callback | unregister_callback | call_function",
+  "command": "auth | load_library | unload_library | register_struct | unregister_struct | register_callback | unregister_callback | call_function",
   "request_id": "unique_id_for_tracking",
   "payload": {
     // ... command-specific data
   }
 }
 ```
+
+**认证（auth）**：连接建立后，客户端发送的第一条消息必须是 `auth` 请求：
+
+```json
+{ "command": "auth", "request_id": "req-1", "payload": { "token": "<token>" } }
+```
+
+executor 校验 token（常量时间比较）后响应 `{ "request_id": "req-1", "status": "success" }`；失败则响应 `{ "request_id": "req-1", "status": "error", "error_message": "Authentication failed" }` 并关闭连接。token 由 `--token` / `--token-file` / `RPC_PROXY_TOKEN` 提供；未配置 token 时 executor 以传统模式运行（不强制认证，启动时打印警告）。
 
 #### `load_library` 示例
 ```json

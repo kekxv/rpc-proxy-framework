@@ -401,8 +401,8 @@ rpc-proxy-framework/
 
 ## 10. 工作流程示例
 
-1.  **启动 Executor**: 在一个终端中运行 `executor --pipe /tmp/my_executor_1`。程序将阻塞，等待连接。
-2.  **Controller 连接**: 另一个进程（如Python脚本）打开并连接到 `/tmp/my_executor_1` 这个文件/管道。
+1.  **启动 Executor**: 在一个终端中运行 `executor --pipe my_executor_1 --token <token>`（或 `--token-file <path>`、`RPC_PROXY_TOKEN` 环境变量）。程序将阻塞，等待连接。
+2.  **Controller 连接并认证**: Controller 打开并连接到 `/tmp/my_executor_1`，发送的第一条消息必须是 `auth` 请求：`{"command":"auth","request_id":"req-1","payload":{"token":"<token>"}}`。认证失败时 executor 会关闭连接。
 3.  **注册结构体**: Controller 写入一个 `register_struct` 的JSON请求字符串。
 4.  **发送请求**: Controller 写入一个 `load_library` 的JSON请求字符串（前面附加4字节长度）。
 5.  **接收响应**: Executor 处理请求，加载库，并返回一个包含 `library_id` 的JSON响应。
@@ -413,7 +413,7 @@ rpc-proxy-framework/
 ## 11. 待办与未来改进 (TODO & Future Improvements)
 
 *   **错误处理**: 完善错误处理机制，特别是捕获被调用函数中的段错误（Segmentation Fault）等致命异常，防止 `executor` 崩溃。
-*   **安全性**: 当前模型下，`executor` 可以执行任何代码，存在巨大安全风险。应在受信任的环境中使用，或考虑使用容器/沙箱技术隔离`executor`进程。
+*   **安全性**: 自 v2 起，配置 token 时 IPC 端点强制认证（`--token` / `--token-file` / `RPC_PROXY_TOKEN`），未认证连接一律关闭；未配置 token 时以传统模式运行（启动时打印警告）。但 token 只解决"谁能连"；一旦连接建立，客户端仍可加载任意 DLL 并调用任意导出函数。因此 executor 仍必须以最低权限账号运行，并建议在容器/沙箱中隔离。
 *   **回调函数支持**: 已实现。当前设计已升级为支持异步、双向通信的回调机制。
 *   **异步处理**: 当前设计为同步请求/响应，可升级为异步模型以提高吞吐量。
 
@@ -478,14 +478,20 @@ make
 cd /path/to/rpc-proxy-framework/build
 
 # 启动 executor 并指定管道名称
-./executor --pipe my_pipe
+./executor --pipe my_pipe --token <token>
 ```
 您将看到类似以下的输出，表示 `executor` 正在监听：
 `Executor listening on pipe: my_pipe`
 
+Token 提供方式（按优先级）：
+1.  `--token <token>` —— 注意会出现在 `ps` 输出中，仅建议开发/CI 使用；
+2.  `--token-file <path>` —— 推荐生产使用，token 文件建议 `chmod 600`；
+3.  环境变量 `RPC_PROXY_TOKEN`。
+配置了 token 时 IPC 强制认证；三者都未设置时 executor 以传统模式启动（打印警告，不强制认证）。客户端（Python/Java/C++ 示例）通过第二命令行参数或 `RPC_PROXY_TOKEN` 环境变量传入同一 token。
+
 **注意**:
 *   在非Windows系统上，这会在 `/tmp/` 目录下创建一个名为 `my_pipe` 的Unix Domain Socket文件。如果 `executor` 未正常关闭，此文件可能残留，导致下次启动失败。此时请手动删除 `/tmp/my_pipe` 文件。
-*   您可以同时启动多个 `executor` 实例，只需为每个实例指定一个唯一的管道名称，例如 `./executor --pipe my_pipe_2`。
+*   您可以同时启动多个 `executor` 实例，只需为每个实例指定一个唯一的管道名称，例如 `./executor --pipe my_pipe_2 --token <token>`。
 
 #### 终端 2: 运行 Controller (Python)
 

@@ -34,10 +34,10 @@ jobs:
     - name: Run Python Example
       timeout-minutes: 1
       run: |
-        build/executor --pipe my_pipe & 
+        build/executor --pipe my_pipe --token ci-test-token &
         EXECUTOR_PID=$!
         sleep 2
-        python3 examples/python_controller/controller.py my_pipe
+        RPC_PROXY_TOKEN=ci-test-token python3 examples/python_controller/controller.py my_pipe
         kill $EXECUTOR_PID
         rm /tmp/my_pipe # Clean up Unix domain socket
 
@@ -50,11 +50,11 @@ jobs:
     - name: Run Java Example
       timeout-minutes: 1
       run: |
-        build/executor --pipe my_pipe & 
+        build/executor --pipe my_pipe --token ci-test-token &
         EXECUTOR_PID=$!
         sleep 3
-        java -jar examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
-        java -cp  examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar com.kekxv.MultiClientApp my_pipe
+        RPC_PROXY_TOKEN=ci-test-token java -jar examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
+        RPC_PROXY_TOKEN=ci-test-token java -cp  examples/java_controller/target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar com.kekxv.MultiClientApp my_pipe
         kill $EXECUTOR_PID
         rm /tmp/my_pipe # Clean up Unix domain socket
 
@@ -66,10 +66,10 @@ jobs:
     - name: Run C++ Example
       timeout-minutes: 1
       run: |
-        build/executor --pipe my_pipe & 
+        build/executor --pipe my_pipe --token ci-test-token &
         EXECUTOR_PID=$!
         sleep 2
-        examples/cpp_controller/build/cpp_controller_example my_pipe
+        RPC_PROXY_TOKEN=ci-test-token examples/cpp_controller/build/cpp_controller_example my_pipe
         kill $EXECUTOR_PID
         rm /tmp/my_pipe # Clean up Unix domain socket
 
