@@ -155,5 +155,19 @@ target_link_libraries(executor PRIVATE
         executor_core
 )
 
+if (WIN32)
+    # 让 executor.exe 可独立运行：把 libffi-8.dll 复制到其所在目录。
+    # 此前 DLL 只被复制到 build/ 根目录与 build/test/，直接运行
+    # build/Release/executor.exe 会因找不到 DLL 而启动失败（0xc000007b）。
+    add_custom_command(
+            TARGET executor
+            POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FFI_BINARIES}"
+            "$<TARGET_FILE_DIR:executor>"
+            COMMENT "Copying libffi DLL next to executor..."
+    )
+endif ()
+
 add_subdirectory(test_lib)
 add_subdirectory(test)

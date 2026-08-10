@@ -40,7 +40,7 @@ if (WIN32)
             POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${FFI_BINARIES}"
-            "${CMAKE_BINARY_DIR}/test/${CMAKE_BUILD_TYPE}"
+            "$<TARGET_FILE_DIR:executor_test>"
             COMMENT "Copying executable to bin directory..."
     )
 endif ()
@@ -91,7 +91,7 @@ if (WIN32)
             POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${FFI_BINARIES}"
-            "${CMAKE_BINARY_DIR}/test/${CMAKE_BUILD_TYPE}"
+            "$<TARGET_FILE_DIR:multi_client_test>"
             COMMENT "Copying FFI binaries for multi_client_test..."
     )
 endif ()

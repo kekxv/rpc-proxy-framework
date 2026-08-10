@@ -102,10 +102,11 @@ public:
       }
 
       DWORD last_error = GetLastError();
-      if (last_error == ERROR_PIPE_BUSY)
+      if (last_error == ERROR_PIPE_BUSY || last_error == ERROR_FILE_NOT_FOUND)
       {
-        // This is expected when multiple clients race for a new pipe instance.
-        // Wait a bit and retry.
+        // ERROR_PIPE_BUSY: 所有实例均被占用；ERROR_FILE_NOT_FOUND: 服务端尚未创建实例。
+        // 两者都是启动竞态，等待后重试（此前对 FILE_NOT_FOUND 立即失败，
+        // 在连续连接（如拒绝后健康客户端）场景下会误报连接失败）。
         Sleep(50);
         continue;
       }
