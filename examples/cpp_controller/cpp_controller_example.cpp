@@ -9,6 +9,7 @@
 #include <atomic>
 #include <filesystem>
 #include <cerrno>
+#include <cstdlib>
 
 #include "json/json.h"
 #include "utils/base64.h" // Include Base64 utilities
@@ -64,8 +65,8 @@ public:
   const SocketType RPC_INVALID_SOCKET = -1;
 #endif
 
-  RpcClient(const std::string& pipe_name) : pipe_name_(pipe_name), sock_(RPC_INVALID_SOCKET), request_id_counter_(0),
-                                            running_(false)
+  RpcClient(const std::string& pipe_name, const std::string& token)
+    : pipe_name_(pipe_name), token_(token), sock_(RPC_INVALID_SOCKET), request_id_counter_(0), running_(false)
   {
   }
 
@@ -105,6 +106,17 @@ public:
 #endif
     running_ = true;
     receiver_thread_ = std::thread(&RpcClient::receive_messages, this);
+
+    // 认证握手：连接后第一条消息必须是 auth
+    json auth_req;
+    auth_req["command"] = "auth";
+    auth_req["payload"]["token"] = token_;
+    json auth_res = send_request(auth_req);
+    if (auth_res["status"].asString() != "success")
+    {
+      throw std::runtime_error("Authentication failed: " + auth_res.get("error_message", "").asString());
+    }
+
     std::cout << "Connected to " << pipe_name_ << std::endl;
   }
 
@@ -323,6 +335,7 @@ private:
   }
 
   std::string pipe_name_;
+  std::string token_;
   SocketType sock_;
   std::atomic<int> request_id_counter_;
   std::thread receiver_thread_;
@@ -357,13 +370,30 @@ int main(int argc, char* argv[])
 {
   if (argc < 2)
   {
-    std::cerr << "Usage: " << argv[0] << " <pipe_name>" << std::endl;
+    std::cerr << "Usage: " << argv[0] << " <pipe_name> [<token>]" << std::endl;
+    std::cerr << "Token can also be provided via the RPC_PROXY_TOKEN environment variable." << std::endl;
     return 1;
+  }
+
+  std::string token;
+  if (argc > 2)
+  {
+    token = argv[2];
+  }
+  else
+  {
+    const char* env_token = std::getenv("RPC_PROXY_TOKEN");
+    if (env_token != nullptr) token = env_token;
+  }
+  if (token.empty())
+  {
+    std::cerr << "Warning: no authentication token configured; running in legacy mode "
+                 "(the executor decides whether to accept)." << std::endl;
   }
 
   try
   {
-    RpcClient client(argv[1]);
+    RpcClient client(argv[1], token);
     client.connect();
 
     std::string library_id;
