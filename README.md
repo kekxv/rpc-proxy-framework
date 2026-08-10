@@ -501,8 +501,8 @@ Python 控制器 `controller.py` 位于 `examples/python_controller` 目录下�
 # 确保当前在项目的根目录下
 cd /path/to/rpc-proxy-framework
 
-# 运行 Python 控制器
-python3 examples/python_controller/controller.py my_pipe
+# 运行 Python 控制器（传入与 executor 相同的 token）
+RPC_PROXY_TOKEN=<token> python3 examples/python_controller/controller.py my_pipe
 ```
 
 `controller.py` 脚本将自动执行以下一系列操作：
@@ -750,7 +750,7 @@ python3 examples/python_controller/controller.py my_pipe
     ```bash
     # 在 examples/java_controller 目录下
     mvn clean compile assembly:single
-    java -jar target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
+    RPC_PROXY_TOKEN=<token> java -jar target/java-controller-1.0-SNAPSHOT-jar-with-dependencies.jar my_pipe
     ```
     **注意**: 上述 Java 示例中的 `new Socket("localhost", 12345)` 是一个占位符。在实际使用中，您需要根据操作系统和 `executor` 的 IPC 实现来调整连接方式。
     *   **对于 Unix-like 系统 (Linux/macOS)**，`executor` 使用 Unix Domain Sockets。Java 16+ 可以使用 `java.net.UnixDomainSocketAddress` 和 `java.nio.channels.SocketChannel` 进行连接。
@@ -1103,7 +1103,7 @@ python3 examples/python_controller/controller.py my_pipe
     cd examples/cpp_controller/build
     cmake ../..
     make
-    ./cpp_controller_example my_pipe
+    RPC_PROXY_TOKEN=<token> ./cpp_controller_example my_pipe
     ```
     **注意**: 上述 `CMakeLists.txt` 假设 `nlohmann/json` 已经以某种方式（例如通过主项目的 `FetchContent`）在您的构建环境中可用。如果不是，您可能需要调整 `find_package` 或手动添加 `nlohmann/json` 的头文件路径。
 

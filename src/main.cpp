@@ -85,26 +85,37 @@ int main(int argc, char* argv[]) {
     std::string pipe_name;
     std::string token;
 
-    for (int i = 1; i < argc; ++i)
+    try
     {
-      std::string arg = argv[i];
-      if (arg == "--pipe" && i + 1 < argc)
+      for (int i = 1; i < argc; ++i)
       {
-        pipe_name = argv[++i];
+        std::string arg = argv[i];
+        if (arg == "--pipe" && i + 1 < argc)
+        {
+          pipe_name = argv[++i];
+        }
+        else if (arg == "--token" && i + 1 < argc)
+        {
+          token = argv[++i];
+        }
+        else if (arg == "--token-file" && i + 1 < argc)
+        {
+          ++i;
+          // 优先级: --token > --token-file > RPC_PROXY_TOKEN。
+          // --token 已提供时忽略 --token-file（与下方环境变量回退一致）。
+          if (token.empty()) token = read_token_file(argv[i]);
+        }
+        else
+        {
+          std::cerr << "Unknown or incomplete argument: " << arg << std::endl;
+          return 1;
+        }
       }
-      else if (arg == "--token" && i + 1 < argc)
-      {
-        token = argv[++i];
-      }
-      else if (arg == "--token-file" && i + 1 < argc)
-      {
-        token = read_token_file(argv[++i]);
-      }
-      else
-      {
-        std::cerr << "Unknown or incomplete argument: " << arg << std::endl;
-        return 1;
-      }
+    }
+    catch (const std::exception& e)
+    {
+      std::cerr << "Error: " << e.what() << std::endl;
+      return 1;
     }
 
     if (pipe_name.empty())

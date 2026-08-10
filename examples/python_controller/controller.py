@@ -951,6 +951,8 @@ def main():
 
   except Exception as e:
     print(f"\n{Colors.BOLD}{Colors.BRIGHT_RED}An error occurred during tests: {e}{Colors.RESET}")
+    # 认证失败（或其他测试失败）后不再进入并发客户端阶段，以非零码退出
+    sys.exit(1)
   finally:
     if library_id:
       print(f"\n{Colors.BRIGHT_CYAN}Unloading library: {library_id}{Colors.RESET}")

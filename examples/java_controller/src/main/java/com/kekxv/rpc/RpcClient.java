@@ -109,7 +109,14 @@ public class RpcClient implements AutoCloseable {
     receiveThread.setDaemon(true);
     receiveThread.start();
 
-    authenticate();
+    try {
+      authenticate();
+    } catch (IOException e) {
+      // 认证失败：复位 running 状态并关闭连接（含接收线程/句柄），
+      // 保证调用者重试 connect() 不会因 running=true 而静默失效。
+      close();
+      throw e;
+    }
   }
 
   /**
