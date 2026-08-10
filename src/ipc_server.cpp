@@ -84,6 +84,10 @@ public:
     if (pipe != INVALID_HANDLE_VALUE)
     {
       CancelIoEx(pipe, NULL);
+      // Windows 命名管道语义：DisconnectNamedPipe 会丢弃客户端尚未读取的缓冲数据。
+      // 写响应后立即断开（如认证失败帧）时，必须先 FlushFileBuffers 确保数据送达客户端，
+      // 否则客户端读到的是空（此前 RejectsClientWithoutAuthHandshake 等在 Windows 上失败）。
+      FlushFileBuffers(pipe);
       DisconnectNamedPipe(pipe);
       CloseHandle(pipe);
     }
