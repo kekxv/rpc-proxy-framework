@@ -36,8 +36,9 @@ class Colors:
   BRIGHT_CYAN = '\033[96m'
 
 class RpcProxyClient:
-  def __init__(self, pipe_name):
+  def __init__(self, pipe_name, token=None):
     self.pipe_name = pipe_name
+    self.token = token if token is not None else os.environ.get("RPC_PROXY_TOKEN", "")
     self.sock = None
     self.request_id_counter = 0
     self.response_queue = queue.Queue()
@@ -66,6 +67,20 @@ class RpcProxyClient:
       self.running = True
       self.receiver_thread = threading.Thread(target=self._receive_messages, daemon=True)
       self.receiver_thread.start()
+
+      # 认证握手：发送 auth 请求；失败抛出异常（token 可为空串，由服务端决定是否放行）
+      self.authenticate()
+
+  def authenticate(self):
+    """发送认证握手；失败抛出异常。token 可为空串，由服务端决定是否放行。"""
+    request = {
+      "command": "auth",
+      "request_id": self._get_next_request_id(),
+      "payload": {"token": self.token}
+    }
+    response = self._send_request(request)
+    if response.get("status") != "success":
+      raise ConnectionError(f"Authentication failed: {response.get('error_message', 'unknown error')}")
 
   def close(self):
     self.running = False
@@ -679,9 +694,10 @@ class SimpleClient:
   一个简化的、跨平台的RPC客户端，用于演示基本的连接和请求。
   它使用阻塞IO，不包含独立的接收线程，使每个客户端的逻辑更简单。
   """
-  def __init__(self, pipe_name, client_id):
+  def __init__(self, pipe_name, client_id, token=None):
     self.pipe_name = pipe_name
     self.client_id = client_id
+    self.token = token if token is not None else os.environ.get("RPC_PROXY_TOKEN", "")
     self.connection = None
     self.is_windows = platform.system() == "Windows"
     self._request_id_counter = 0
@@ -793,6 +809,12 @@ class SimpleClient:
     self.send(request)
     return self.receive()
 
+  def authenticate(self):
+    """发送认证握手；失败抛出异常。token 可为空串，由服务端决定是否放行。"""
+    response = self.call("auth", {"token": self.token})
+    if not response or response.get("status") != "success":
+      raise ConnectionError(f"Authentication failed: {response.get('error_message', 'unknown error')}")
+
 
 def get_test_lib_path():
   """获取跨平台的测试库路径"""
@@ -815,17 +837,24 @@ def get_test_lib_path():
   raise FileNotFoundError(f"Test library (my_lib{lib_ext}) not found in common build directories.")
 
 
-def run_client_session(client_id, pipe_name, lib_path):
+def run_client_session(client_id, pipe_name, lib_path, token):
   """
   模拟一个客户端的完整会话：连接，加载库，调用函数，然后断开。
   """
   safe_print(f"[Client {client_id}] {Colors.YELLOW}Thread started.{Colors.RESET}")
 
-  client = SimpleClient(pipe_name, client_id)
+  client = SimpleClient(pipe_name, client_id, token)
   library_id = None
 
   try:
     if not client.connect():
+      return
+
+    # 认证握手
+    try:
+      client.authenticate()
+    except Exception as e:
+      safe_print(f"[Client {client_id}] {Colors.RED}Authentication failed: {e}{Colors.RESET}")
       return
 
     # 1. 加载库
@@ -873,11 +902,12 @@ def run_client_session(client_id, pipe_name, lib_path):
 
 
 def main():
-  if len(sys.argv) != 2:
-    print(f"{Colors.BRIGHT_RED}Usage: python {sys.argv[0]} <pipe_name>{Colors.RESET}")
+  if len(sys.argv) < 2:
+    print(f"{Colors.BRIGHT_RED}Usage: python {sys.argv[0]} <pipe_name> [<token>]{Colors.RESET}")
     sys.exit(1)
 
   pipe_name = sys.argv[1]
+  token = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("RPC_PROXY_TOKEN", "")
 
   lib_ext = {"Linux": ".so", "Darwin": ".dylib", "Windows": ".dll"}[platform.system()]
   lib_path = os.path.abspath(f"build/test_lib/my_lib{lib_ext}")
@@ -893,7 +923,7 @@ def main():
     print(f"{Colors.YELLOW}Please build the test library first.{Colors.RESET}")
     sys.exit(1)
 
-  client = RpcProxyClient(pipe_name)
+  client = RpcProxyClient(pipe_name, token)
   library_id = None
   # callback_id = None # Removed explicit cleanup, handled by unregister_callback in test functions
 
@@ -926,11 +956,13 @@ def main():
       print(f"\n{Colors.BRIGHT_CYAN}Unloading library: {library_id}{Colors.RESET}")
       client.unload_library(library_id)
 
-    print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Line'{Colors.RESET}")
-    client.unregister_struct("Line")
+    # 认证失败时服务端已关闭连接，跳过需要活动连接的清理步骤
+    if client.sock and client.running:
+      print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Line'{Colors.RESET}")
+      client.unregister_struct("Line")
 
-    print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Point'{Colors.RESET}")
-    client.unregister_struct("Point")
+      print(f"{Colors.BRIGHT_CYAN}Unregistering struct 'Point'{Colors.RESET}")
+      client.unregister_struct("Point")
 
     client.close()
 
@@ -940,7 +972,7 @@ def main():
   threads = []
   for i in range(NUM_CLIENTS):
     # 创建一个线程，目标是 run_client_session 函数
-    thread = threading.Thread(target=run_client_session, args=(i, pipe_name, lib_path))
+    thread = threading.Thread(target=run_client_session, args=(i, pipe_name, lib_path, token))
     threads.append(thread)
     thread.start()
 
