@@ -284,6 +284,8 @@ class MultiClientIntegrationTest : public ::testing::Test
 protected:
   std::unique_ptr<Executor> executor_;
   std::thread executor_thread_;
+  // 认证 token：默认 kTestToken（强制认证模式）；子类可置空以模拟传统兼容模式（不配置 token）。
+  std::string token_ = kTestToken;
 
   void SetUp() override
   {
@@ -305,7 +307,7 @@ protected:
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " started. Calling run().";
       }
-      executor_->run(g_pipe_name, kTestToken);
+      executor_->run(g_pipe_name, token_);
       {
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " finished run()." << std::endl;
@@ -805,4 +807,70 @@ TEST_F(MultiClientIntegrationTest, RejectsMalformedAuthFrameWithoutStoppingServe
   ASSERT_TRUE(healthy_client.send_request(json_dump(request)));
   json response = json_parse(healthy_client.receive_response());
   EXPECT_EQ(response["request_id"].asString(), "after-bad-auth");
+}
+
+TEST_F(MultiClientIntegrationTest, RejectsClientWithEmptyToken)
+{
+  // 强制认证模式下，空 token 同样必须拒绝（fail-closed）：
+  // 覆盖“传统客户端（不带 token）误连强制认证服务器”的场景。
+  SimplePipeClient client(206, "");
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  EXPECT_FALSE(client.authenticate());
+  // 服务器必须在认证失败后关闭连接
+  EXPECT_TRUE(client.receive_response().empty());
+}
+
+// --- 传统兼容模式测试 ---
+// 传统模式：executor 未配置 token（run 第二参数为空串），不强制认证。
+// 约束：首帧是普通命令时按传统行为直接处理；首帧是 auth 帧时视为通过。
+
+class LegacyModeIntegrationTest : public MultiClientIntegrationTest
+{
+protected:
+  void SetUp() override
+  {
+    token_ = ""; // 传统模式：不配置 token
+    MultiClientIntegrationTest::SetUp();
+  }
+};
+
+TEST_F(LegacyModeIntegrationTest, LegacyModeAcceptsNormalFirstFrame)
+{
+  // 传统模式：客户端不发 auth 帧，首帧直接是普通命令 → 按传统行为成功处理。
+  SimplePipeClient client(210, "");
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  json request;
+  request["command"] = "load_library";
+  request["request_id"] = "legacy-load";
+  request["payload"]["path"] = get_test_library_path();
+  ASSERT_TRUE(client.send_request(json_dump(request)));
+  json response = json_parse(client.receive_response());
+  EXPECT_EQ(response["status"].asString(), "success");
+  EXPECT_EQ(response["request_id"].asString(), "legacy-load");
+  EXPECT_FALSE(response["data"]["library_id"].asString().empty());
+}
+
+TEST_F(LegacyModeIntegrationTest, LegacyModeAcceptsAuthFrameWithEmptyToken)
+{
+  // 传统模式：客户端带空 token 的 auth 帧也按通过处理（空 token 无从校验）。
+  SimplePipeClient client(211, "");
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  EXPECT_TRUE(client.authenticate());
+}
+
+TEST_F(LegacyModeIntegrationTest, LegacyModeAcceptsAuthFrameWithAnyTokenAndProcessesCommands)
+{
+  // 传统模式：客户端带任意 token 的 auth 帧通过，且认证之后普通命令仍可正常执行。
+  SimplePipeClient client(212, "whatever-token");
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  EXPECT_TRUE(client.authenticate());
+
+  json request;
+  request["command"] = "load_library";
+  request["request_id"] = "legacy-after-auth";
+  request["payload"]["path"] = get_test_library_path();
+  ASSERT_TRUE(client.send_request(json_dump(request)));
+  json response = json_parse(client.receive_response());
+  EXPECT_EQ(response["status"].asString(), "success");
+  EXPECT_EQ(response["request_id"].asString(), "legacy-after-auth");
 }

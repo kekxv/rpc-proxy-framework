@@ -69,6 +69,12 @@ target_include_directories(multi_client_test PRIVATE
 # 添加测试
 add_test(NAME multi_client_integration_test COMMAND multi_client_test)
 
+# --- CLI 参数解析测试 ---
+# 直接运行 executor 二进制，验证 --pipe/--token/--token-file/环境变量解析与退出码。
+add_test(NAME cli_args_test
+         COMMAND ${CMAKE_COMMAND} -DEXECUTOR=$<TARGET_FILE:executor>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_args_test.cmake)
+
 # 确保测试库 my_lib 在测试前被构建
 add_dependencies(multi_client_test my_lib)
 
