@@ -39,9 +39,15 @@ static bool try_parse_auth_frame(const std::string& frame, std::string& request_
   std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
   std::string errs;
   if (!reader->parse(frame.data(), frame.data() + frame.size(), &parsed, &errs)) return false;
+  if (!parsed.isObject()) return false; // 顶层非对象（字符串/数组等）：不是合法 auth 帧
   if (parsed.get("command", "").asString() != "auth") return false;
   request_id = parsed.get("request_id", "").asString();
-  token = parsed["payload"]["token"].asString();
+  // 注意：此 jsoncpp 构建下 Value::get() 内部 find() 对非对象值会抛 Json::LogicError，
+  // 因此必须先用 isObject() 守卫；payload 非对象（字符串/数字等）时 token 落空 => 保持 fail-closed。
+  if (parsed["payload"].isObject())
+  {
+    token = parsed["payload"]["token"].asString();
+  }
   return true;
 }
 
@@ -413,6 +419,10 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
 void Executor::run(const std::string& pipe_name, const std::string& auth_token)
 {
   auth_token_ = auth_token;
+  if (auth_token_.empty())
+  {
+    std::cerr << "WARNING: no auth token configured; running in legacy mode (connections will NOT be authenticated)" << std::endl;
+  }
   is_running_ = true;
   server->listen(pipe_name);
 

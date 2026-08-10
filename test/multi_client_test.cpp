@@ -758,3 +758,31 @@ TEST_F(MultiClientIntegrationTest, RejectsClientWithWrongToken)
   // 服务器必须在认证失败后关闭连接
   EXPECT_TRUE(client.receive_response().empty());
 }
+
+TEST_F(MultiClientIntegrationTest, RejectsMalformedAuthFrameWithoutStoppingServer)
+{
+  {
+    SimplePipeClient client(202);
+    ASSERT_TRUE(client.connect(g_pipe_name));
+    json request;
+    request["command"] = "auth";
+    request["request_id"] = "bad-auth";
+    request["payload"] = "garbage"; // payload 不是对象：绝不能导致服务器崩溃
+    ASSERT_TRUE(client.send_request(json_dump(request)));
+    json response = json_parse(client.receive_response());
+    EXPECT_EQ(response["status"].asString(), "error");
+    // 服务器必须在握手失败后关闭连接
+    EXPECT_TRUE(client.receive_response().empty());
+  }
+
+  SimplePipeClient healthy_client(203);
+  ASSERT_TRUE(healthy_client.connect(g_pipe_name));
+  ASSERT_TRUE(healthy_client.authenticate());
+  json request;
+  request["command"] = "still-alive-after-bad-auth";
+  request["request_id"] = "after-bad-auth";
+  request["payload"] = Json::objectValue;
+  ASSERT_TRUE(healthy_client.send_request(json_dump(request)));
+  json response = json_parse(healthy_client.receive_response());
+  EXPECT_EQ(response["request_id"].asString(), "after-bad-auth");
+}
