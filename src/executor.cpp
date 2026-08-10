@@ -18,6 +18,33 @@
 
 using json = Json::Value;
 
+// 常量时间字符串比较，避免时序侧信道泄露 token 内容。
+static bool secure_equals(const std::string& a, const std::string& b)
+{
+  if (a.size() != b.size()) return false;
+  unsigned char diff = 0;
+  for (size_t i = 0; i < a.size(); ++i)
+  {
+    diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+  }
+  return diff == 0;
+}
+
+// 尝试把首帧解析为 auth 请求。成功返回 true 并输出 request_id 与 payload.token。
+static bool try_parse_auth_frame(const std::string& frame, std::string& request_id, std::string& token)
+{
+  if (frame.empty()) return false;
+  json parsed;
+  Json::CharReaderBuilder builder;
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  std::string errs;
+  if (!reader->parse(frame.data(), frame.data() + frame.size(), &parsed, &errs)) return false;
+  if (parsed.get("command", "").asString() != "auth") return false;
+  request_id = parsed.get("request_id", "").asString();
+  token = parsed["payload"]["token"].asString();
+  return true;
+}
+
 // 全局日志锁，防止多线程打印乱码
 std::mutex g_log_mutex;
 
@@ -270,7 +297,60 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   std::map<std::string, json> cleanup_tasks;
   int cleanup_counter = 0;
 
-  while (is_running_ && connection->isOpen()) // Also check is_running_ here
+  // 首帧处理：
+  //  - 配置了 token：首帧必须是 auth 且 token 匹配（fail-closed），否则回错误并断开；
+  //  - 未配置 token（传统模式）：不强制认证，首帧是普通命令则直接处理，首帧是 auth 则按通过处理。
+  std::string first_frame = connection->read();
+  bool session_open = false;
+  if (!first_frame.empty())
+  {
+    std::string auth_req_id, auth_token;
+    bool is_auth_frame = try_parse_auth_frame(first_frame, auth_req_id, auth_token);
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+
+    if (auth_token_.empty())
+    {
+      // 传统兼容模式：无 token 不强制认证
+      if (is_auth_frame)
+      {
+        // 客户端带了 token 但 executor 未配置：视为通过（空 token 无从校验）
+        json ok;
+        ok["request_id"] = auth_req_id;
+        ok["status"] = "success";
+        session_open = connection->write(Json::writeString(writer, ok));
+      }
+      else
+      {
+        // 首帧是普通命令：按传统行为直接处理
+        std::string response_str = handle_session_request(
+          first_frame, lib_manager, struct_manager, callback_manager, ffi_dispatcher, cleanup_tasks, cleanup_counter);
+        session_open = connection->write(response_str);
+      }
+    }
+    else
+    {
+      // 强制认证模式
+      if (is_auth_frame && secure_equals(auth_token, auth_token_))
+      {
+        json ok;
+        ok["request_id"] = auth_req_id;
+        ok["status"] = "success";
+        session_open = connection->write(Json::writeString(writer, ok));
+      }
+      else
+      {
+        json err;
+        err["request_id"] = auth_req_id;
+        err["status"] = "error";
+        err["error_message"] = "Authentication failed";
+        connection->write(Json::writeString(writer, err));
+        connection->close();
+      }
+    }
+  }
+
+  while (session_open && is_running_ && connection->isOpen()) // Also check is_running_ here
   {
     std::string request_str = connection->read();
     if (request_str.empty())
@@ -330,8 +410,9 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   }
 }
 
-void Executor::run(const std::string& pipe_name)
+void Executor::run(const std::string& pipe_name, const std::string& auth_token)
 {
+  auth_token_ = auth_token;
   is_running_ = true;
   server->listen(pipe_name);
 

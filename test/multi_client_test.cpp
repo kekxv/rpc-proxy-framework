@@ -53,6 +53,8 @@ json json_parse(const std::string& s)
 }
 
 // --- Test Configuration ---
+// Shared test token used by all integration tests.
+static const std::string kTestToken = "integration-test-token-9f3a7c";
 static std::string g_pipe_name;
 static std::atomic<unsigned int> g_pipe_counter{0};
 const int NUM_CLIENTS = 10; // Number of concurrent clients to simulate
@@ -64,7 +66,8 @@ const int NUM_CLIENTS = 10; // Number of concurrent clients to simulate
 class SimplePipeClient
 {
 public:
-  SimplePipeClient(int client_id) : client_id_(client_id)
+  SimplePipeClient(int client_id, const std::string& token = kTestToken)
+      : client_id_(client_id), token_(token)
   {
   };
 
@@ -158,6 +161,17 @@ public:
       socket_fd_ = -1;
     }
 #endif
+  }
+
+  bool authenticate()
+  {
+    json auth_req;
+    auth_req["command"] = "auth";
+    auth_req["request_id"] = "req-auth-" + std::to_string(client_id_);
+    auth_req["payload"]["token"] = token_;
+    if (!send_request(json_dump(auth_req))) return false;
+    json resp = json_parse(receive_response());
+    return resp["status"].asString() == "success";
   }
 
   bool send_request(const std::string& request)
@@ -255,6 +269,7 @@ private:
   }
 
   int client_id_;
+  std::string token_;
 #ifdef _WIN32
   HANDLE pipe_handle_ = INVALID_HANDLE_VALUE;
 #else
@@ -290,7 +305,7 @@ protected:
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " started. Calling run().";
       }
-      executor_->run(g_pipe_name);
+      executor_->run(g_pipe_name, kTestToken);
       {
         std::lock_guard<std::mutex> lock(g_test_log_mutex);
         std::cout << "[Test Main] Executor thread " << std::this_thread::get_id() << " finished run()." << std::endl;
@@ -346,6 +361,13 @@ bool run_client_session(int client_id, const std::string& lib_path)
   {
     std::lock_guard<std::mutex> lock(g_test_log_mutex);
     std::cerr << "[Client " << client_id << "] Failed to connect." << std::endl;
+    return false;
+  }
+
+  if (!client.authenticate())
+  {
+    std::lock_guard<std::mutex> lock(g_test_log_mutex);
+    std::cerr << "[Client " << client_id << "] Authentication failed." << std::endl;
     return false;
   }
 
@@ -517,6 +539,7 @@ TEST_F(MultiClientIntegrationTest, TransfersFiveMiBBufferAndKeepsFramingAligned)
 {
   SimplePipeClient client(100);
   ASSERT_TRUE(client.connect(g_pipe_name));
+  ASSERT_TRUE(client.authenticate());
   const std::string library_id = load_test_library(client);
   ASSERT_FALSE(library_id.empty());
 
@@ -572,6 +595,7 @@ TEST_F(MultiClientIntegrationTest, HandlesFragmentedHeaderAndBody)
 {
   SimplePipeClient client(101);
   ASSERT_TRUE(client.connect(g_pipe_name));
+  ASSERT_TRUE(client.authenticate());
   json request;
   request["command"] = "unknown_fragmented_command";
   request["request_id"] = "fragmented";
@@ -593,6 +617,7 @@ TEST_F(MultiClientIntegrationTest, RejectsOversizedFrameWithoutStoppingServer)
 
   SimplePipeClient healthy_client(103);
   ASSERT_TRUE(healthy_client.connect(g_pipe_name));
+  ASSERT_TRUE(healthy_client.authenticate());
   json request;
   request["command"] = "unknown_after_oversize";
   request["request_id"] = "healthy";
@@ -607,6 +632,7 @@ TEST_F(MultiClientIntegrationTest, TransfersFiveMiBCallbackEvent)
 {
   SimplePipeClient client(104);
   ASSERT_TRUE(client.connect(g_pipe_name));
+  ASSERT_TRUE(client.authenticate());
   const std::string library_id = load_test_library(client);
   ASSERT_FALSE(library_id.empty());
 
@@ -669,6 +695,7 @@ TEST_F(MultiClientIntegrationTest, ClientDisconnectDuringLargeResponseDoesNotSto
   {
     SimplePipeClient client(106);
     ASSERT_TRUE(client.connect(g_pipe_name));
+    ASSERT_TRUE(client.authenticate());
     const std::string library_id = load_test_library(client);
     ASSERT_FALSE(library_id.empty());
 
@@ -698,6 +725,7 @@ TEST_F(MultiClientIntegrationTest, ClientDisconnectDuringLargeResponseDoesNotSto
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   SimplePipeClient healthy_client(107);
   ASSERT_TRUE(healthy_client.connect(g_pipe_name));
+  ASSERT_TRUE(healthy_client.authenticate());
   json request;
   request["command"] = "still-alive";
   request["request_id"] = "after-disconnect";
@@ -705,4 +733,28 @@ TEST_F(MultiClientIntegrationTest, ClientDisconnectDuringLargeResponseDoesNotSto
   ASSERT_TRUE(healthy_client.send_request(json_dump(request)));
   json response = json_parse(healthy_client.receive_response());
   EXPECT_EQ(response["request_id"].asString(), "after-disconnect");
+}
+
+TEST_F(MultiClientIntegrationTest, RejectsClientWithoutAuthHandshake)
+{
+  SimplePipeClient client(200);
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  json request;
+  request["command"] = "load_library";
+  request["request_id"] = "no-auth";
+  request["payload"]["path"] = get_test_library_path();
+  ASSERT_TRUE(client.send_request(json_dump(request)));
+  json response = json_parse(client.receive_response());
+  EXPECT_EQ(response["status"].asString(), "error");
+  // 服务器必须在握手失败后关闭连接
+  EXPECT_TRUE(client.receive_response().empty());
+}
+
+TEST_F(MultiClientIntegrationTest, RejectsClientWithWrongToken)
+{
+  SimplePipeClient client(201, "wrong-token");
+  ASSERT_TRUE(client.connect(g_pipe_name));
+  EXPECT_FALSE(client.authenticate());
+  // 服务器必须在认证失败后关闭连接
+  EXPECT_TRUE(client.receive_response().empty());
 }

@@ -19,12 +19,13 @@ public:
   Executor();
   ~Executor();
 
-  void run(const std::string& pipe_name);
+  void run(const std::string& pipe_name, const std::string& auth_token);
   void stop();
 
 private:
   std::unique_ptr<IpcServer> server;
   std::atomic<bool> is_running_{false};
+  std::string auth_token_;
   std::mutex sessions_mutex_;
   std::set<ClientConnection*> active_connections_;
   std::vector<std::thread> session_threads_;
