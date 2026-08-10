@@ -40,13 +40,21 @@ static bool try_parse_auth_frame(const std::string& frame, std::string& request_
   std::string errs;
   if (!reader->parse(frame.data(), frame.data() + frame.size(), &parsed, &errs)) return false;
   if (!parsed.isObject()) return false; // 顶层非对象（字符串/数组等）：不是合法 auth 帧
-  if (parsed.get("command", "").asString() != "auth") return false;
-  request_id = parsed.get("request_id", "").asString();
-  // 注意：此 jsoncpp 构建下 Value::get() 内部 find() 对非对象值会抛 Json::LogicError，
-  // 因此必须先用 isObject() 守卫；payload 非对象（字符串/数字等）时 token 落空 => 保持 fail-closed。
+  // 全程类型检查：此 jsoncpp 构建（JSON_USE_EXCEPTION=1）下，非字符串值调用 asString()
+  // （以及 Value::get() 内部 find() 对非对象值）都会抛 Json::LogicError。因此只对 isString()
+  // 的值取字符串；容器/数字/缺失一律视为字段无效 => 保持 fail-closed（"" 永远不等于已配置 token）。
+  if (!parsed["command"].isString() || parsed["command"].asString() != "auth") return false;
+  if (parsed["request_id"].isString())
+  {
+    request_id = parsed["request_id"].asString();
+  }
   if (parsed["payload"].isObject())
   {
-    token = parsed["payload"]["token"].asString();
+    const json& token_value = parsed["payload"]["token"];
+    if (token_value.isString())
+    {
+      token = token_value.asString();
+    }
   }
   return true;
 }
@@ -310,49 +318,64 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   bool session_open = false;
   if (!first_frame.empty())
   {
-    std::string auth_req_id, auth_token;
-    bool is_auth_frame = try_parse_auth_frame(first_frame, auth_req_id, auth_token);
-    Json::StreamWriterBuilder writer;
-    writer["indentation"] = "";
-
-    if (auth_token_.empty())
+    try
     {
-      // 传统兼容模式：无 token 不强制认证
-      if (is_auth_frame)
+      std::string auth_req_id, auth_token;
+      bool is_auth_frame = try_parse_auth_frame(first_frame, auth_req_id, auth_token);
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+
+      if (auth_token_.empty())
       {
-        // 客户端带了 token 但 executor 未配置：视为通过（空 token 无从校验）
-        json ok;
-        ok["request_id"] = auth_req_id;
-        ok["status"] = "success";
-        session_open = connection->write(Json::writeString(writer, ok));
+        // 传统兼容模式：无 token 不强制认证
+        if (is_auth_frame)
+        {
+          // 客户端带了 token 但 executor 未配置：视为通过（空 token 无从校验）
+          json ok;
+          ok["request_id"] = auth_req_id;
+          ok["status"] = "success";
+          session_open = connection->write(Json::writeString(writer, ok));
+        }
+        else
+        {
+          // 首帧是普通命令：按传统行为直接处理
+          std::string response_str = handle_session_request(
+            first_frame, lib_manager, struct_manager, callback_manager, ffi_dispatcher, cleanup_tasks, cleanup_counter);
+          session_open = connection->write(response_str);
+        }
       }
       else
       {
-        // 首帧是普通命令：按传统行为直接处理
-        std::string response_str = handle_session_request(
-          first_frame, lib_manager, struct_manager, callback_manager, ffi_dispatcher, cleanup_tasks, cleanup_counter);
-        session_open = connection->write(response_str);
+        // 强制认证模式
+        if (is_auth_frame && secure_equals(auth_token, auth_token_))
+        {
+          json ok;
+          ok["request_id"] = auth_req_id;
+          ok["status"] = "success";
+          session_open = connection->write(Json::writeString(writer, ok));
+        }
+        else
+        {
+          json err;
+          err["request_id"] = auth_req_id;
+          err["status"] = "error";
+          err["error_message"] = "Authentication failed";
+          connection->write(Json::writeString(writer, err));
+          connection->close();
+        }
       }
     }
-    else
+    catch (const std::exception& e)
     {
-      // 强制认证模式
-      if (is_auth_frame && secure_equals(auth_token, auth_token_))
-      {
-        json ok;
-        ok["request_id"] = auth_req_id;
-        ok["status"] = "success";
-        session_open = connection->write(Json::writeString(writer, ok));
-      }
-      else
-      {
-        json err;
-        err["request_id"] = auth_req_id;
-        err["status"] = "error";
-        err["error_message"] = "Authentication failed";
-        connection->write(Json::writeString(writer, err));
-        connection->close();
-      }
+      // 纵深防御：首帧处理中任何异常都不能崩溃进程 —— 一律按认证失败拒绝并断开连接（fail-closed）。
+      json err;
+      err["request_id"] = "";
+      err["status"] = "error";
+      err["error_message"] = "Authentication failed";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      connection->write(Json::writeString(writer, err));
+      connection->close();
     }
   }
 

@@ -761,20 +761,40 @@ TEST_F(MultiClientIntegrationTest, RejectsClientWithWrongToken)
 
 TEST_F(MultiClientIntegrationTest, RejectsMalformedAuthFrameWithoutStoppingServer)
 {
+  // 发送畸形首帧并断言：收到 error 响应且连接被服务器关闭（绝不崩溃）。
+  auto expect_rejected = [this](int client_id, const json& frame)
   {
-    SimplePipeClient client(202);
+    SimplePipeClient client(client_id);
     ASSERT_TRUE(client.connect(g_pipe_name));
-    json request;
-    request["command"] = "auth";
-    request["request_id"] = "bad-auth";
-    request["payload"] = "garbage"; // payload 不是对象：绝不能导致服务器崩溃
-    ASSERT_TRUE(client.send_request(json_dump(request)));
+    ASSERT_TRUE(client.send_request(json_dump(frame)));
     json response = json_parse(client.receive_response());
     EXPECT_EQ(response["status"].asString(), "error");
     // 服务器必须在握手失败后关闭连接
     EXPECT_TRUE(client.receive_response().empty());
-  }
+  };
 
+  // 1) payload 是字符串（非对象）
+  json string_payload;
+  string_payload["command"] = "auth";
+  string_payload["request_id"] = "bad-auth";
+  string_payload["payload"] = "garbage";
+  expect_rejected(202, string_payload);
+
+  // 2) token 是对象（asString() 会抛 LogicError 的残留形态）
+  json token_object;
+  token_object["command"] = "auth";
+  token_object["request_id"] = "bad-auth-2";
+  token_object["payload"]["token"] = Json::objectValue;
+  expect_rejected(204, token_object);
+
+  // 3) request_id 是对象（asString() 会抛 LogicError 的残留形态）
+  json request_id_object;
+  request_id_object["command"] = "auth";
+  request_id_object["request_id"] = Json::objectValue;
+  request_id_object["payload"]["token"] = "x";
+  expect_rejected(205, request_id_object);
+
+  // 服务器必须仍然存活：健康客户端可正常认证并得到响应
   SimplePipeClient healthy_client(203);
   ASSERT_TRUE(healthy_client.connect(g_pipe_name));
   ASSERT_TRUE(healthy_client.authenticate());
