@@ -63,6 +63,7 @@ public class RpcClient implements AutoCloseable {
   // =========================================================================
 
   private final String pipeName;
+  private final String token;
   private final AtomicBoolean running = new AtomicBoolean(false);
 
   // Windows 资源
@@ -83,7 +84,12 @@ public class RpcClient implements AutoCloseable {
   private final BlockingQueue<JSONObject> eventQueue = new LinkedBlockingQueue<>();
 
   public RpcClient(String pipeName) {
+    this(pipeName, System.getenv("RPC_PROXY_TOKEN"));
+  }
+
+  public RpcClient(String pipeName, String token) {
     this.pipeName = pipeName;
+    this.token = token;
   }
 
   public void connect() throws IOException {
@@ -102,6 +108,29 @@ public class RpcClient implements AutoCloseable {
     receiveThread = new Thread(this::receiveLoop, "Rpc-Receiver-" + pipeName);
     receiveThread.setDaemon(true);
     receiveThread.start();
+
+    authenticate();
+  }
+
+  /**
+   * 认证握手：连接后第一条消息必须是 auth。失败抛 IOException。
+   * token 可为空串，由服务端决定是否放行（无 token 的 executor 为传统模式）。
+   * 注意：sendRequest 会自行分配 request_id，响应回显后由 pendingRequests 关联。
+   */
+  private void authenticate() throws IOException {
+    try {
+      JSONObject request = new JSONObject()
+        .put("command", "auth")
+        .put("payload", new JSONObject().put("token", token == null ? "" : token));
+      JSONObject response = sendRequest(request);
+      if (!"success".equals(response.optString("status"))) {
+        throw new IOException("Authentication failed: " + response.optString("error_message"));
+      }
+    } catch (IOException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IOException("Authentication failed", e);
+    }
   }
 
   /**
