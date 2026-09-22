@@ -305,10 +305,6 @@ void Executor::join_session_threads()
 void Executor::handle_client_session(std::shared_ptr<ClientConnection> connection)
 {
   ClientConnection* connection_ptr = connection.get();
-  {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    active_connections_.insert(connection);
-  }
 
   // 资源隔离：每个线程/会话拥有独立的 Managers
   StructManager struct_manager;
@@ -479,6 +475,7 @@ void Executor::run(const std::string& pipe_name, const std::string& auth_token)
         break;
       }
       std::shared_ptr<ClientConnection> shared_connection(std::move(connection));
+      active_connections_.insert(shared_connection);
       std::thread session_thread([this, conn = std::move(shared_connection)]() mutable
       {
         this->handle_client_session(std::move(conn));
