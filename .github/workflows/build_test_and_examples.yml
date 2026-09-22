@@ -28,12 +28,17 @@ jobs:
         set -o pipefail
         ctest --test-dir build --output-on-failure --timeout 55 2>&1 | tee ctest.log
         status=${PIPESTATUS[0]}
+        if [ "$status" -eq 0 ]; then result='✅ Passed'; else result='❌ Failed'; fi
+        passed=$(grep -Eo '[0-9]+% tests passed' ctest.log | tail -1 || true)
+        duration=$(grep -E 'Total Test time' ctest.log | tail -1 | sed 's/^[[:space:]]*//' || true)
         {
-          echo '## CTest Summary (Linux)'
+          echo '## 🧪 CTest — Linux'
           echo
-          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo '| Result | Tests | Duration |'
+          echo '|:---:|:---|:---|'
+          echo "| $result | ${passed:-Unavailable} | ${duration:-Unavailable} |"
           echo
-          echo '<details><summary>Last 40 log lines</summary>'
+          echo '<details><summary>Show last 40 log lines</summary>'
           echo
           echo '```text'
           tail -n 40 ctest.log
@@ -113,10 +118,15 @@ jobs:
         set -o pipefail
         ctest --test-dir build --output-on-failure --timeout 55 2>&1 | tee ctest.log
         status=${PIPESTATUS[0]}
+        if [ "$status" -eq 0 ]; then result='✅ Passed'; else result='❌ Failed'; fi
+        passed=$(grep -Eo '[0-9]+% tests passed' ctest.log | tail -1 || true)
+        duration=$(grep -E 'Total Test time' ctest.log | tail -1 | sed 's/^[[:space:]]*//' || true)
         {
-          echo '## CTest Summary (Linux build)'
+          echo '## 🧪 CTest — Linux build'
           echo
-          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo '| Result | Tests | Duration |'
+          echo '|:---:|:---|:---|'
+          echo "| $result | ${passed:-Unavailable} | ${duration:-Unavailable} |"
           echo
           echo '```text'
           tail -n 40 ctest.log
@@ -146,10 +156,15 @@ jobs:
         set -o pipefail
         ctest --test-dir build --output-on-failure --timeout 90 2>&1 | tee ctest.log
         status=${PIPESTATUS[0]}
+        if [ "$status" -eq 0 ]; then result='✅ Passed'; else result='❌ Failed'; fi
+        passed=$(grep -Eo '[0-9]+% tests passed' ctest.log | tail -1 || true)
+        duration=$(grep -E 'Total Test time' ctest.log | tail -1 | sed 's/^[[:space:]]*//' || true)
         {
-          echo '## CTest Summary (macOS)'
+          echo '## 🧪 CTest — macOS'
           echo
-          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo '| Result | Tests | Duration |'
+          echo '|:---:|:---|:---|'
+          echo "| $result | ${passed:-Unavailable} | ${duration:-Unavailable} |"
           echo
           echo '```text'
           tail -n 40 ctest.log
@@ -186,9 +201,16 @@ jobs:
       run: |
         & ctest --test-dir build --output-on-failure -C Release --timeout 55 2>&1 | Tee-Object -FilePath ctest.log
         $status = $LASTEXITCODE
-        Add-Content $env:GITHUB_STEP_SUMMARY "## CTest Summary (Windows x64)"
+        $result = if ($status -eq 0) { '✅ Passed' } else { '❌ Failed' }
+        $passed = (Select-String -Path ctest.log -Pattern '[0-9]+% tests passed' | Select-Object -Last 1).Line.Trim()
+        $duration = (Select-String -Path ctest.log -Pattern 'Total Test time' | Select-Object -Last 1).Line.Trim()
+        Add-Content $env:GITHUB_STEP_SUMMARY "## 🧪 CTest — Windows x64"
         Add-Content $env:GITHUB_STEP_SUMMARY ""
-        Get-Content ctest.log | Select-String 'tests passed|Total Test time|Test #[0-9]+:' | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+        Add-Content $env:GITHUB_STEP_SUMMARY '| Result | Tests | Duration |'
+        Add-Content $env:GITHUB_STEP_SUMMARY '|:---:|:---|:---|'
+        Add-Content $env:GITHUB_STEP_SUMMARY "| $result | $passed | $duration |"
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Add-Content $env:GITHUB_STEP_SUMMARY '<details><summary>Show last 40 log lines</summary>'
         Add-Content $env:GITHUB_STEP_SUMMARY ""
         Add-Content $env:GITHUB_STEP_SUMMARY '```text'
         Get-Content ctest.log | Select-Object -Last 40 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
@@ -245,9 +267,16 @@ jobs:
       run: |
         & ctest --test-dir build --output-on-failure -C Release --timeout 55 2>&1 | Tee-Object -FilePath ctest.log
         $status = $LASTEXITCODE
-        Add-Content $env:GITHUB_STEP_SUMMARY "## CTest Summary (Windows x86)"
+        $result = if ($status -eq 0) { '✅ Passed' } else { '❌ Failed' }
+        $passed = (Select-String -Path ctest.log -Pattern '[0-9]+% tests passed' | Select-Object -Last 1).Line.Trim()
+        $duration = (Select-String -Path ctest.log -Pattern 'Total Test time' | Select-Object -Last 1).Line.Trim()
+        Add-Content $env:GITHUB_STEP_SUMMARY "## 🧪 CTest — Windows x86"
         Add-Content $env:GITHUB_STEP_SUMMARY ""
-        Get-Content ctest.log | Select-String 'tests passed|Total Test time|Test #[0-9]+:' | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+        Add-Content $env:GITHUB_STEP_SUMMARY '| Result | Tests | Duration |'
+        Add-Content $env:GITHUB_STEP_SUMMARY '|:---:|:---|:---|'
+        Add-Content $env:GITHUB_STEP_SUMMARY "| $result | $passed | $duration |"
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Add-Content $env:GITHUB_STEP_SUMMARY '<details><summary>Show last 40 log lines</summary>'
         Add-Content $env:GITHUB_STEP_SUMMARY ""
         Add-Content $env:GITHUB_STEP_SUMMARY '```text'
         Get-Content ctest.log | Select-Object -Last 40 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }

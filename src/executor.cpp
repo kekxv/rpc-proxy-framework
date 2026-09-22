@@ -277,8 +277,12 @@ void Executor::stop()
 
 void Executor::close_active_connections()
 {
-  std::lock_guard<std::mutex> lock(sessions_mutex_);
-  for (ClientConnection* connection : active_connections_)
+  std::vector<std::shared_ptr<ClientConnection>> connections;
+  {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    connections.assign(active_connections_.begin(), active_connections_.end());
+  }
+  for (const auto& connection : connections)
   {
     connection->close();
   }
@@ -298,12 +302,12 @@ void Executor::join_session_threads()
 }
 
 // 处理单个客户端会话的逻辑（在独立线程中运行）
-void Executor::handle_client_session(std::unique_ptr<ClientConnection> connection)
+void Executor::handle_client_session(std::shared_ptr<ClientConnection> connection)
 {
   ClientConnection* connection_ptr = connection.get();
   {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
-    active_connections_.insert(connection_ptr);
+    active_connections_.insert(connection);
   }
 
   // 资源隔离：每个线程/会话拥有独立的 Managers
@@ -439,7 +443,7 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
 
   {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
-    active_connections_.erase(connection_ptr);
+    active_connections_.erase(connection);
   }
 }
 
@@ -474,7 +478,8 @@ void Executor::run(const std::string& pipe_name, const std::string& auth_token)
         connection->close();
         break;
       }
-      std::thread session_thread([this, conn = std::move(connection)]() mutable
+      std::shared_ptr<ClientConnection> shared_connection(std::move(connection));
+      std::thread session_thread([this, conn = std::move(shared_connection)]() mutable
       {
         this->handle_client_session(std::move(conn));
       });
