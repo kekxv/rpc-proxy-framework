@@ -23,7 +23,24 @@ jobs:
         cmake --build build --config Release
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure --timeout 55
+      shell: bash
+      run: |
+        set -o pipefail
+        ctest --test-dir build --output-on-failure --timeout 55 2>&1 | tee ctest.log
+        status=${PIPESTATUS[0]}
+        {
+          echo '## CTest Summary (Linux)'
+          echo
+          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo
+          echo '<details><summary>Last 40 log lines</summary>'
+          echo
+          echo '```text'
+          tail -n 40 ctest.log
+          echo '```'
+          echo '</details>'
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit "$status"
       timeout-minutes: 1
 
     - name: Build Test Lib
@@ -91,7 +108,21 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure --timeout 55
+      shell: bash
+      run: |
+        set -o pipefail
+        ctest --test-dir build --output-on-failure --timeout 55 2>&1 | tee ctest.log
+        status=${PIPESTATUS[0]}
+        {
+          echo '## CTest Summary (Linux build)'
+          echo
+          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo
+          echo '```text'
+          tail -n 40 ctest.log
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit "$status"
       timeout-minutes: 1
 
   build-macos:
@@ -110,7 +141,21 @@ jobs:
         cmake --build build --config Release
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure --timeout 90
+      shell: bash
+      run: |
+        set -o pipefail
+        ctest --test-dir build --output-on-failure --timeout 90 2>&1 | tee ctest.log
+        status=${PIPESTATUS[0]}
+        {
+          echo '## CTest Summary (macOS)'
+          echo
+          grep -E '^[0-9]+% tests passed|Total Test time|tests passed|Test #[0-9]+:' ctest.log || true
+          echo
+          echo '```text'
+          tail -n 40 ctest.log
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit "$status"
       timeout-minutes: 2
 
   build-windows-x64:
@@ -137,7 +182,18 @@ jobs:
         }
 
     - name: Test (x64)
-      run: ctest --test-dir build --output-on-failure -C Release --timeout 55
+      shell: pwsh
+      run: |
+        & ctest --test-dir build --output-on-failure -C Release --timeout 55 2>&1 | Tee-Object -FilePath ctest.log
+        $status = $LASTEXITCODE
+        Add-Content $env:GITHUB_STEP_SUMMARY "## CTest Summary (Windows x64)"
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Get-Content ctest.log | Select-String 'tests passed|Total Test time|Test #[0-9]+:' | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Add-Content $env:GITHUB_STEP_SUMMARY '```text'
+        Get-Content ctest.log | Select-Object -Last 40 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
+        Add-Content $env:GITHUB_STEP_SUMMARY '```'
+        exit $status
       timeout-minutes: 1
 
     - name: Package and Upload Win64 Artifacts
@@ -185,7 +241,18 @@ jobs:
         }
 
     - name: Test (x86)
-      run: ctest --test-dir build --output-on-failure -C Release --timeout 55
+      shell: pwsh
+      run: |
+        & ctest --test-dir build --output-on-failure -C Release --timeout 55 2>&1 | Tee-Object -FilePath ctest.log
+        $status = $LASTEXITCODE
+        Add-Content $env:GITHUB_STEP_SUMMARY "## CTest Summary (Windows x86)"
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Get-Content ctest.log | Select-String 'tests passed|Total Test time|Test #[0-9]+:' | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+        Add-Content $env:GITHUB_STEP_SUMMARY ""
+        Add-Content $env:GITHUB_STEP_SUMMARY '```text'
+        Get-Content ctest.log | Select-Object -Last 40 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
+        Add-Content $env:GITHUB_STEP_SUMMARY '```'
+        exit $status
       timeout-minutes: 1
 
     - name: Package and Upload Win32 Artifacts

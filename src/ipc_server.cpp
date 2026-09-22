@@ -65,7 +65,9 @@ public:
         message.size() > (std::numeric_limits<uint32_t>::max)()) return false;
     uint32_t len = static_cast<uint32_t>(message.size());
     uint32_t net_len = htonl(len);
-    return writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());
+    const bool written = writeAll(&net_len, sizeof(net_len)) && writeAll(message.data(), message.size());
+    if (written) has_written_.store(true);
+    return written;
   }
 
   bool sendEvent(const json& event_json) override
@@ -84,10 +86,10 @@ public:
     if (pipe != INVALID_HANDLE_VALUE)
     {
       CancelIoEx(pipe, NULL);
-      // Windows 命名管道语义：DisconnectNamedPipe 会丢弃客户端尚未读取的缓冲数据。
-      // 写响应后立即断开（如认证失败帧）时，必须先 FlushFileBuffers 确保数据送达客户端，
-      // 否则客户端读到的是空（此前 RejectsClientWithoutAuthHandshake 等在 Windows 上失败）。
-      FlushFileBuffers(pipe);
+      // 空闲客户端没有待读取数据时不要调用 FlushFileBuffers：该调用会等待客户端
+      // 消费管道缓冲区，进而阻塞 executor::stop() 的会话线程。已写过响应的连接
+      // 仍 flush，以保留认证失败响应在断开前送达的语义。
+      if (has_written_.load()) FlushFileBuffers(pipe);
       DisconnectNamedPipe(pipe);
       CloseHandle(pipe);
     }
@@ -136,6 +138,7 @@ private:
 
   std::atomic<HANDLE> pipe_;
   std::atomic<bool> is_open_;
+  std::atomic<bool> has_written_{false};
   std::mutex write_mutex_;
 };
 
