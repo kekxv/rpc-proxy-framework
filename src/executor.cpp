@@ -155,6 +155,9 @@ static const std::map<std::string, CommandHandler> COMMAND_DISPATCHER = {
                            FfiDispatcher&, std::map<std::string, json>& cleanup_tasks, int& cleanup_counter)
     {
       // 注册一个清理任务，参数格式与 call_function 类似
+      if (cleanup_tasks.size() >= 1024) {
+        throw std::runtime_error("Too many cleanup tasks");
+      }
       cleanup_counter++;
       std::string cleanup_id = "cleanup-" + std::to_string(cleanup_counter);
       cleanup_tasks[cleanup_id] = payload;
@@ -413,6 +416,7 @@ void Executor::handle_client_session(std::unique_ptr<ClientConnection> connectio
   }
 
   // 执行清理任务
+  callback_manager.invalidateConnection(connection_ptr);
   for (const auto& pair : cleanup_tasks)
   {
     const json& task = pair.second;

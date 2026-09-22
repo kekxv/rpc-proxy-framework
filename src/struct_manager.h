@@ -46,6 +46,9 @@ public:
     // 判断一个类型名是否是已注册的结构体
     bool is_struct(const std::string& type_name) const;
 
+    void retain_struct(const std::string& type_name);
+    void release_struct(const std::string& type_name);
+
     // 将内存中的结构体序列化为JSON对象
     Json::Value serializeStruct(const std::string& struct_name, const void* struct_ptr) const;
 
@@ -57,6 +60,7 @@ private:
 
     std::map<std::string, ffi_type*> basic_type_map;
     std::map<std::string, StructLayout> registered_structs;
+    std::map<std::string, size_t> struct_users;
 };
 
 #endif // STRUCT_MANAGER_H

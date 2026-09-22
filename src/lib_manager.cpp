@@ -66,6 +66,10 @@ std::string LibManager::generate_uuid()
 
 std::string LibManager::load_library(const std::string& path)
 {
+  constexpr size_t kMaxLoadedLibraries = 128;
+  if (libraries.size() >= kMaxLoadedLibraries) {
+    throw std::runtime_error("Too many loaded libraries");
+  }
   LibraryHandle handle;
 #ifdef _WIN32
   handle = LoadLibraryA(path.c_str());

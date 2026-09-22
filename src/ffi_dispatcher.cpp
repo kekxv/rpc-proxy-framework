@@ -270,6 +270,10 @@ void* FfiDispatcher::allocate_and_populate_arg(const json& arg_json, FfiArgs& ar
           const json& array_json = arg_json["value"];
           if (!array_json.isArray()) throw std::runtime_error("Expected array for target_type " + target_type_name);
           size_t num_elements = array_json.size();
+          if (element_layout->total_size != 0 &&
+              num_elements > (std::numeric_limits<size_t>::max)() / element_layout->total_size) {
+            throw std::runtime_error("Pointer array size overflow");
+          }
           size_t total_array_size = num_elements * element_layout->total_size;
           char* array_mem = static_cast<char*>(arg_storage.allocate_array(
             total_array_size, std::max(element_layout->alignment, sizeof(void*))));
@@ -318,6 +322,10 @@ json FfiDispatcher::call_function(void* func_ptr, const json& payload)
   ffi_type* rtype = get_ffi_type_for_name(return_type_str);
 
   const json& args_json = payload["args"];
+  constexpr size_t kMaxFfiArguments = 4096;
+  if (!args_json.isArray() || args_json.size() > kMaxFfiArguments) {
+    throw std::runtime_error("Too many FFI arguments");
+  }
   size_t arg_count = args_json.size();
   std::vector<ffi_type*> arg_types(arg_count);
   std::vector<void*> arg_values(arg_count);
@@ -379,5 +387,11 @@ json FfiDispatcher::call_function(void* func_ptr, const json& payload)
   }
   result["out_params"] = out_params;
 
+  Json::StreamWriterBuilder writer;
+  writer["indentation"] = "";
+  const std::string encoded = Json::writeString(writer, result);
+  if (encoded.size() > kMaxIpcFrameSize) {
+    throw std::runtime_error("FFI response exceeds the 64 MiB safety limit");
+  }
   return result;
 }

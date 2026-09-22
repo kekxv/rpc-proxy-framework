@@ -165,7 +165,22 @@ void StructManager::unregister_struct(const std::string& name) {
     if (it == registered_structs.end()) {
         throw std::runtime_error("Struct '" + name + "' not found for unregistration.");
     }
+    auto users = struct_users.find(name);
+    if (users != struct_users.end() && users->second != 0) {
+        throw std::runtime_error("Struct '" + name + "' is still referenced by a callback.");
+    }
     registered_structs.erase(it);
+    struct_users.erase(name);
+}
+
+void StructManager::retain_struct(const std::string& type_name) {
+    if (!is_struct(type_name)) throw std::runtime_error("Struct '" + type_name + "' not found.");
+    ++struct_users[type_name];
+}
+
+void StructManager::release_struct(const std::string& type_name) {
+    auto it = struct_users.find(type_name);
+    if (it != struct_users.end() && it->second > 0) --it->second;
 }
 
 const StructLayout* StructManager::get_layout(const std::string& name) const {

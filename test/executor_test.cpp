@@ -527,6 +527,86 @@ TEST_F(ExecutorTest, RejectsBufferAboveSafetyLimit)
     std::runtime_error);
 }
 
+TEST_F(ExecutorTest, RejectsInvalidBufferDirection)
+{
+  json payload;
+  payload["return_type"] = "void";
+  json arg;
+  arg["type"] = "buffer";
+  arg["direction"] = "sideways";
+  arg["size"] = 16;
+  payload["args"] = Json::arrayValue;
+  payload["args"].append(arg);
+
+  EXPECT_THROW(
+    ffi_dispatcher.call_function(nullptr, payload), std::runtime_error);
+}
+
+TEST_F(ExecutorTest, RejectsDecodedBufferLargerThanDeclaredSize)
+{
+  json payload;
+  payload["return_type"] = "void";
+  json arg;
+  arg["type"] = "buffer";
+  arg["direction"] = "in";
+  arg["size"] = 3;
+  arg["value"] = "AQIDBA=="; // four decoded bytes
+  payload["args"] = Json::arrayValue;
+  payload["args"].append(arg);
+
+  EXPECT_THROW(
+    ffi_dispatcher.call_function(nullptr, payload), std::runtime_error);
+}
+
+TEST_F(ExecutorTest, RejectsUnregisteringStructReferencedByCallback)
+{
+  json args_def(Json::arrayValue);
+  args_def.append("Point");
+  callback_manager.registerCallback("void", args_def);
+
+  EXPECT_THROW(struct_manager.unregister_struct("Point"), std::runtime_error);
+}
+
+TEST_F(ExecutorTest, StructCanBeUnregisteredAfterCallbackIsRemoved)
+{
+  json args_def(Json::arrayValue);
+  args_def.append("Point");
+  std::string callback_id = callback_manager.registerCallback("void", args_def);
+  callback_manager.unregisterCallback(callback_id);
+
+  EXPECT_NO_THROW(struct_manager.unregister_struct("Point"));
+}
+
+TEST_F(ExecutorTest, RejectsExcessiveCallbackCount)
+{
+  json args_def(Json::arrayValue);
+  args_def.append("int32");
+  std::vector<std::string> callback_ids;
+  callback_ids.reserve(128);
+  for (size_t i = 0; i < 128; ++i) {
+    callback_ids.push_back(callback_manager.registerCallback("void", args_def));
+  }
+
+  EXPECT_THROW(callback_manager.registerCallback("void", args_def), std::runtime_error);
+}
+
+TEST_F(ExecutorTest, RejectsExcessiveArgumentCount)
+{
+  json payload;
+  payload["return_type"] = "void";
+  json args(Json::arrayValue);
+  for (size_t i = 0; i < 5000; ++i)
+  {
+    json arg;
+    arg["type"] = "int32";
+    arg["value"] = 1;
+    args.append(arg);
+  }
+  payload["args"] = args;
+
+  EXPECT_THROW(ffi_dispatcher.call_function(nullptr, payload), std::runtime_error);
+}
+
 TEST_F(ExecutorTest, TriggerReadCallback)
 {
   if (test_lib_id.empty()) return;
@@ -668,4 +748,34 @@ TEST_F(ExecutorTest, TriggerFixedReadCallback)
 
   // Check arg 1: context
   EXPECT_EQ(cb_args[1]["value"].asUInt64(), 987654);
+}
+
+TEST_F(ExecutorTest, InvalidatedConnectionDoesNotReceiveCallbackEvent)
+{
+  if (test_lib_id.empty()) return;
+  json args_def(Json::arrayValue);
+  args_def.append("string");
+  args_def.append("int32");
+  std::string cb_id = callback_manager.registerCallback("void", args_def);
+  callback_manager.invalidateConnection(&dummy_connection);
+  dummy_connection.last_event = Json::nullValue;
+
+  json payload;
+  payload["return_type"] = "void";
+  json callback_arg;
+  callback_arg["type"] = "callback";
+  callback_arg["value"] = cb_id;
+  json value_arg;
+  value_arg["type"] = "string";
+  value_arg["value"] = "ignored";
+  json int_arg;
+  int_arg["type"] = "int32";
+  int_arg["value"] = 7;
+  payload["args"] = Json::arrayValue;
+  payload["args"].append(callback_arg);
+  payload["args"].append(value_arg);
+  payload["args"].append(int_arg);
+
+  ffi_dispatcher.call_function(lib_manager.get_function(test_lib_id, "call_my_callback"), payload);
+  EXPECT_TRUE(dummy_connection.last_event.isNull());
 }

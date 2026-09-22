@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <functional>
+#include <atomic>
 
 #include <ffi.h>
 #include <json/json.h> // For JSON handling
@@ -24,6 +25,11 @@ struct CallbackArgInfo {
 };
 
 struct CallbackInfo {
+    ~CallbackInfo() {
+        if (struct_manager) {
+            for (const auto& type : retained_structs) struct_manager->release_struct(type);
+        }
+    }
     std::string callback_id;
     ffi_cif cif;
     ffi_closure* closure;
@@ -35,8 +41,9 @@ struct CallbackInfo {
     std::vector<CallbackArgInfo> args_info;
     
     std::string return_type_name;
-    ClientConnection* connection; // Pointer to the client connection to send events
+    std::atomic<ClientConnection*> connection{nullptr};
     StructManager* struct_manager;
+    std::vector<std::string> retained_structs;
 };
 
 class CallbackManager {
@@ -48,6 +55,7 @@ public:
     std::string registerCallback(const std::string& return_type_name, const Json::Value& args_type_def);
     void unregisterCallback(const std::string& callback_id);
     void* getTrampolineFunctionPtr(const std::string& callback_id);
+    void invalidateConnection(ClientConnection* connection);
 
     // Static trampoline function that libffi will call
     static void ffi_trampoline(ffi_cif* cif, void* ret, void** args, void* userdata);

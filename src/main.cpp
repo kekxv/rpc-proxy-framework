@@ -11,49 +11,8 @@
 #include <signal.h>
 #endif
 
-char** g_argv = nullptr;
-
-#ifdef _WIN32
-LONG WINAPI UnhandledExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    ZeroMemory(&pi, sizeof(pi));
-
-    LPSTR commandLine = GetCommandLineA();
-
-    if (CreateProcessA(NULL, commandLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    ExitProcess(1);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-#else
-void SignalHandler(int signum) {
-    if (g_argv != nullptr) {
-        execv(g_argv[0], g_argv);
-    }
-    _exit(1);
-}
-#endif
-
 void setup_crash_handler() {
-#ifdef _WIN32
-    SetUnhandledExceptionFilter(UnhandledExceptionHandler);
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-#else
-    struct sigaction sa;
-    sa.sa_handler = SignalHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
-    sigaction(SIGILL, &sa, NULL);
-    sigaction(SIGFPE, &sa, NULL);
-#endif
+    // 崩溃交由外部 supervisor 处理，避免进程内无限重启。
 }
 
 // 读取 token 文件：取第一行并去除行尾空白（兼容 CRLF）。
@@ -79,7 +38,6 @@ static std::string read_token_file(const std::string& path)
 }
 
 int main(int argc, char* argv[]) {
-    g_argv = argv;
     setup_crash_handler();
 
     std::string pipe_name;

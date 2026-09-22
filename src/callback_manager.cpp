@@ -43,6 +43,7 @@ CallbackManager::~CallbackManager()
 {
   for (auto const& [id, info] : registered_callbacks_)
   {
+    info->connection.store(nullptr);
     ffi_closure_free(info->closure);
   }
 }
@@ -103,16 +104,27 @@ ffi_type* CallbackManager::getFfiType(const std::string& type_name)
 std::string CallbackManager::registerCallback(const std::string& return_type_name,
                                               const Json::Value& args_type_def)
 {
+  constexpr size_t kMaxCallbacks = 128;
+  if (registered_callbacks_.size() >= kMaxCallbacks) {
+    throw std::runtime_error("Too many registered callbacks");
+  }
   auto info = std::make_unique<CallbackInfo>();
   info->callback_id = generateUniqueId();
-  info->connection = connection_;
+  info->connection.store(connection_);
   info->struct_manager = struct_manager_;
   info->return_type_name = return_type_name;
 
   info->return_type = getFfiType(return_type_name);
+  if (struct_manager_->is_struct(return_type_name)) {
+    struct_manager_->retain_struct(return_type_name);
+    info->retained_structs.push_back(return_type_name);
+  }
 
   if (!args_type_def.isArray()) {
       throw std::runtime_error("args_type must be an array");
+  }
+  if (args_type_def.size() > kMaxCallbacks) {
+      throw std::runtime_error("Too many callback arguments");
   }
 
   info->arg_types.reserve(args_type_def.size());
@@ -124,6 +136,10 @@ std::string CallbackManager::registerCallback(const std::string& return_type_nam
     if (arg_def.isString()) {
         arg_info.type_name = arg_def.asString();
         arg_info.ffi_type_ptr = getFfiType(arg_info.type_name);
+        if (struct_manager_->is_struct(arg_info.type_name)) {
+          struct_manager_->retain_struct(arg_info.type_name);
+          info->retained_structs.push_back(arg_info.type_name);
+        }
     } else if (arg_def.isObject()) {
         std::string type = arg_def["type"].asString();
         if (type == "buffer_ptr") {
@@ -180,12 +196,21 @@ void CallbackManager::unregisterCallback(const std::string& callback_id)
   auto it = registered_callbacks_.find(callback_id);
   if (it != registered_callbacks_.end())
   {
+    it->second->connection.store(nullptr);
     ffi_closure_free(it->second->closure);
     registered_callbacks_.erase(it);
   }
   else
   {
     throw std::runtime_error("Callback with ID " + callback_id + " not found.");
+  }
+}
+
+void CallbackManager::invalidateConnection(ClientConnection* connection)
+{
+  for (auto& [id, info] : registered_callbacks_) {
+    ClientConnection* expected = connection;
+    info->connection.compare_exchange_strong(expected, nullptr);
   }
 }
 
@@ -205,7 +230,8 @@ extern std::mutex g_log_mutex;
 void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void* userdata)
 {
   CallbackInfo* info = static_cast<CallbackInfo*>(userdata);
-  if (!info || !info->connection)
+  ClientConnection* connection = info ? info->connection.load() : nullptr;
+  if (!info || !connection)
   {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     std::cerr << "[Executor][CallbackManager] Error: CallbackInfo or ClientConnection not available in trampoline." << std::endl;
@@ -307,7 +333,7 @@ void CallbackManager::ffi_trampoline(ffi_cif* cif, void* ret, void** args, void*
   event_json["event"] = "invoke_callback";
   event_json["payload"] = event_payload;
 
-  info->connection->sendEvent(event_json);
+  connection->sendEvent(event_json);
 
   if (info->return_type != &ffi_type_void)
   {
